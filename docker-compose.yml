@@ -1,0 +1,32 @@
+services:
+  mongo:
+    image: mongo
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: Password123$
+      MONGO_INITDB_DATABASE: project-fish
+    ports:
+      - 27017:27017
+    command: mongod --bind_ip 0.0.0.0
+
+  mongo-express:
+    image: mongo-express
+    restart: always
+    ports:
+      - 8081:8081
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: root
+      ME_CONFIG_MONGODB_ADMINPASSWORD: Password123$
+      ME_CONFIG_MONGODB_URL: mongodb://root:Password123$@mongo:27017/
+      ME_CONFIG_BASICAUTH: false
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: root
+      RABBITMQ_DEFAULT_PASS: Password123$
+    ports:
+      - 5672:5672
+      - 8080:8080
