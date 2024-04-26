@@ -1,0 +1,15 @@
+start: domain/url
+- logs every request/response through a proxy and a selenium/chrome instance
+- starting url and its relative subsequent requests are identified by uuid
+- every request will also be identified by a uuid/hash (chrome already does this)
+- everything is timestamped (chrome already does this)
+- everything is hashed + simhashed (todo: simhash)
+- tls certificates are logged (mitmproxy interferes wit this, todo: find a way to get the original certificate info)
+
+
+
+Nice-to-have:
+- find a way to automagically find common substrings in a list of elements which are not present in any other element (IOCs)
+- periodically check DNS resolution with from multiple countries.
+- periodically re-analyze URLs to check whether they're still up  
+- Save ASN info (geoip as well?)
