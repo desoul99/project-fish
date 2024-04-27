@@ -39,3 +39,7 @@ As an example, we analyzed 500 malicious URLs obtained from 'https://openphish.c
 
 ![image](https://github.com/desoul99/project-fish/assets/72390215/9040c925-ae22-4d5a-86c9-40f3321ff342)
 
+
+## Disclaimer
+
+Project Fish is a proof-of-concept project developed over a weekend and is not intended for production use. As such, it will not be maintained or updated. However, feel free to explore the codebase and adapt it for your own purposes.
