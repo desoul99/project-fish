@@ -9,6 +9,11 @@ mongodb:
 rabbitmq:
   username: root
   password: Password123$
+  queue: pf_urlqueue
 
 proxy:
   url: http://127.0.0.1:8082
+
+browser:
+  max_tabs: 4
+  executable_path: /usr/bin/google-chrome

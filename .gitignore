@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+mitmdump
+mitmproxy
+mitmweb
+
 # C extensions
 *.so
 
