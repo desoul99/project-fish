@@ -2,3 +2,4 @@ nodriver
 pymongo
 pyyaml
 pika
+requests

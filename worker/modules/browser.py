@@ -1,4 +1,5 @@
-from modules.helpers import RequestEncoder, ResponseEncoder
+from modules.encoders import RequestEncoder, ResponseEncoder
+from modules import requestMonitor
 from nodriver import start, cdp, loop
 import requests
 import pymongo
