@@ -3,18 +3,59 @@ import nodriver as uc
 from nodriver import cdp
 import time
 import typing
-import os
-import hashlib
-import json
+import logging
 import base64
-from tqdm import tqdm
-#from .encoders import RequestEncoder, ResponseEncoder
+
+# from .encoders import RequestEncoder, ResponseEncoder
+import aiofiles
+
+
+logging.basicConfig(level=logging.WARNING)
+
 
 allowed_resourceTypes = [
-    cdp.network.ResourceType.XHR, cdp.network.ResourceType.DOCUMENT, cdp.network.ResourceType.IMAGE,
-    cdp.network.ResourceType.MEDIA, cdp.network.ResourceType.OTHER, cdp.network.ResourceType.STYLESHEET,
-    cdp.network.ResourceType.FONT, cdp.network.ResourceType.SCRIPT, cdp.network.ResourceType.FETCH, cdp.network.ResourceType.PING
+    cdp.network.ResourceType.XHR,
+    cdp.network.ResourceType.DOCUMENT,
+    cdp.network.ResourceType.IMAGE,
+    cdp.network.ResourceType.MEDIA,
+    cdp.network.ResourceType.OTHER,
+    cdp.network.ResourceType.STYLESHEET,
+    cdp.network.ResourceType.FONT,
+    cdp.network.ResourceType.SCRIPT,
+    cdp.network.ResourceType.FETCH,
+    cdp.network.ResourceType.PING,
 ]
+
+
+async def monitor_aio(loop, task_limit_sec, exclude=[]):
+    # record of all task names and their start times
+    task_dict = dict()
+    # loop forever
+    while True:
+        # get all tasks
+        for task in asyncio.all_tasks(loop=loop):
+            # skip excluded tasks
+            if task in exclude:
+                continue
+            # get task name
+            name = task.get_name()
+            # context = task.get_context()
+            # check if not previously known
+            if name not in task_dict:
+                # add start time (first time seen)
+                task_dict[name] = time.monotonic()
+                continue
+            # compute duration for current task
+            duration = time.monotonic() - task_dict[name]
+            # check if not too long
+            if duration < task_limit_sec:
+                continue
+            # report task that has been alive too long
+            # task.print_stack()
+            # logging.debug(f'{name} alive for too long: {duration:.3f} seconds')
+        # check every second
+        await asyncio.sleep(1)
+
 
 # Define a TypedDict for the response type
 class ResponseType(typing.TypedDict):
@@ -22,164 +63,185 @@ class ResponseType(typing.TypedDict):
     body: str
     is_base64: bool
 
+
 class RequestMonitor:
-    def __init__(self):
-        self.responses: list[cdp.network.RequestId] = []
-        self.requests: list[cdp.network.RequestWillBeSent] = []
+    def __init__(self, loop):
+        self.responses: list[cdp.network.ResponseReceived] = []
+        self.requests = []
         self.last_request: float | None = None
         self.lock = asyncio.Lock()
-    
+        self.paused_requests: list[cdp.fetch.RequestPaused] = []
+        self.paused_requests_condition = asyncio.Condition()
+        self.paused_requests_queue = asyncio.Queue()
+        self.loop = loop
+
     async def get_requests(self):
         async with self.lock:
-            return len(self.requests), len(self.responses), len([request for request in self.requests if request.request_id not in self.responses and request.redirect_response is None and not request.request.url.startswith('data:')])
-    
+            return (
+                len(self.requests),
+                len(self.responses),
+                len([request for request in self.requests if request.request_id not in self.responses and request.redirect_response is None and not request.request.url.startswith("data:")]),
+            )
+
     async def get_missing_responses(self):
         print("awaiting lock")
         async with self.lock:
             print("got lock")
-            return [request for request in self.requests if request.request_id not in self.responses and request.redirect_response is None and not request.request.url.startswith('data:')]
+            return [request for request in self.requests if request.request_id not in self.responses and request.redirect_response is None and not request.request.url.startswith("data:")]
 
     async def listen(self, page: uc.Tab):
         async def response_handler(evt: cdp.network.ResponseReceived):
-            if evt.response.encoded_data_length > 0 and evt.type_ in allowed_resourceTypes:
-                async with self.lock:
-                    self.responses.append(evt.request_id)
-                    self.last_response = time.time()
-            elif evt.response.encoded_data_length > 0:
-                print(f'EVENT PERCEIVED BY BROWSER IS: {evt.type_}, {evt.type_ in allowed_resourceTypes}')
-        
+            self.responses.append(evt)
+
         async def request_handler(evt: cdp.network.RequestWillBeSent):
-            initiator_url = getattr(evt.initiator, 'url', '') or ''
-            request_url = getattr(evt.request, 'url', '') or ''
-                
-            if not (request_url.startswith('chrome') or request_url.startswith('blob:') or initiator_url.startswith('chrome')):
-                async with self.lock:
-                    self.requests.append(evt)
+            initiator_url = getattr(evt.initiator, "url", "") or ""
+            request_url = getattr(evt.request, "url", "") or ""
+
+            if not (request_url.startswith("chrome") or request_url.startswith("blob:") or initiator_url.startswith("chrome")):
+                self.requests.append(evt)
+
+        async def fetch_request_paused_handler(evt: cdp.fetch.RequestPaused):
+            # self.paused_requests.append(evt)
+            await self.paused_requests_queue.put(evt)
+            logging.info(f"Element {evt.request_id} put in queue")
+
+        pause_pattern = [cdp.fetch.RequestPattern(request_stage=cdp.fetch.RequestStage.RESPONSE)]
+
+        page.add_handler(cdp.fetch.RequestPaused, fetch_request_paused_handler)
+        await page.send(cdp.fetch.enable(pause_pattern))
 
         page.add_handler(cdp.network.ResponseReceived, response_handler)
         page.add_handler(cdp.network.RequestWillBeSent, request_handler)
 
-    async def receive(self, page: uc.Tab):
-        responses: list[ResponseType] = []
-        
-        req_ids = set([request.request_id for request in self.requests])
-        res_ids = set(self.responses)
-        
-        a = req_ids - res_ids
-        b = res_ids - req_ids
-        
-        print(len(req_ids), len(res_ids), len(a), len(b))
-        print(req_ids, res_ids)
-        
-        async with self.lock:
-            for request in tqdm(self.requests):
-                try:
-                    if request.request.url.startswith('data:'):
-                        print('data')
-                    elif request.request_id in self.responses:
-                        retries = 0
-                        while retries < 50:
-                            res = await page.send(cdp.network.get_response_body(request.request_id))
-                            if res is not None:
-                                break
-                            retries = retries + 1
-                        
-                        if res is None:
-                            continue
-                        
-                        # Prepare the response data
-                        body = res[0]  # Response body
-                        is_base64 = res[1]  # Whether the response is base64 encoded
-                        responses.append({'request_id': request.request_id, 'body': body, 'is_base64': is_base64})
+    async def handle_paused_response(self, evt: cdp.fetch.RequestPaused, page: uc.Tab):
+        # Response stage
+        # logging.debug(str(evt))
+
+        if not evt.response_headers:
+            await page.send(cdp.fetch.continue_response(evt.request_id))
+            return
+
+        content_length = next(
+            (int(header.value) for header in evt.response_headers if header.name.lower() == "content-length"),
+            0,
+        )
+
+        if content_length == 0:
+            await page.send(cdp.fetch.continue_response(evt.request_id))
+            return
+
+        if evt.response_status_code in [300, 301, 302, 303, 304, 305, 306, 307, 308] and any(h.name.lower() == "location" for h in evt.response_headers):
+            # Redirect
+            logging.info("AAAAAAAAAAAAAAAA REDIRECT" + evt.request_id)
+
+        else:
+            c = await page.send(cdp.fetch.get_response_body(evt.request_id))
+            if c is not None:
+                body, is_base64 = c
+                file_mode = "wb" if is_base64 else "w"
+                filename = f"data/{evt.request_id}.txt" if not is_base64 else f"data/{evt.request_id}.bin"
+
+                async with aiofiles.open(filename, mode=file_mode) as f:
+                    if is_base64:
+                        await f.write(base64.b64decode(body))
                     else:
-                        print('wtf')
+                        await f.write(body)
+            else:
+                logging.info(f"Failed to get response body for {str(evt.request_id)}")
 
-                except Exception as e:
-                    print(f'Error getting body for request {request}: {e}')
+        await page.send(cdp.fetch.continue_response(evt.request_id))
 
-        return responses
+    async def handle_paused_request(self, evt: cdp.fetch.RequestPaused, page: uc.Tab):
+        # Request stage
+        self.requests[evt.request_id] = evt.request
+        await page.send(cdp.fetch.continue_request(evt.request_id))
 
-    async def save_response(self, url: str, body: str, is_base64: bool):
-        """Save the response to a file based on the request URL"""
-        # Create a unique filename using the URL (hashed)
-        filename = self.generate_filename(url)
-        file_path = f"responses/{filename}"
+    async def handle_paused_requests(self, page: uc.Tab):
+        while True:
+            logging.info("Awaiting Items")
+            evt = await self.paused_requests_queue.get()
+            logging.info(f"Got item {evt.request_id} from queue")
 
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            if any(value is not None for value in [evt.response_error_reason, evt.response_status_code]):
+                logging.info(f"Handling {evt.request_id} as response")
+                self.loop.create_task(self.handle_paused_response(evt, page))
+            else:
+                logging.info(f"Handling {evt.request_id} as request")
+                self.loop.create_task(self.handle_paused_request(evt, page))
 
-        # If the content is base64-encoded, decode it
-        if is_base64:
-            body = base64.b64decode(body)
-
-        # Write the response body to a file (binary mode for base64, text mode otherwise)
-        mode = 'wb' if is_base64 else 'w'
-        with open(file_path, mode) as f:
-            f.write(body)
-
-        #print(f"Response saved to {file_path}")
-
-    def generate_filename(self, url: str) -> str:
-        """Generate a unique filename based on the URL using SHA256 hash"""
-        #url_hash = hashlib.sha256(url.encode()).hexdigest()
-        #return f"{url_hash}.txt"
-        return url.encode()[:150]
+    def print_data(self):
+        print("Requests: " + str(len(self.requests)))
+        print("Responses: " + str(len(self.responses)))
 
 
-async def crawl():
+async def crawl(loop):
     # Start the browser
-    browser = await uc.start(headless=False)
-    monitor = RequestMonitor()
+    print(loop)
 
-    tab = await browser.get('about:blank')
+    browser = await uc.start(headless=False, browser_executable_path="/usr/bin/google-chrome")
+    monitor = RequestMonitor(loop)
+
+    tab = await browser.get("about:blank")
+
+    input("press any key")
+
+    loop.slow_callback_duration = 1  # 10 ms
+    handle_paused_requests_task = loop.create_task(monitor.handle_paused_requests(tab))
+
+    # Add a callback to be notified if the task fails
+    def task_done_callback(fut):
+        try:
+            fut.result()  # This will raise any exceptions that occurred in the task
+        except Exception as e:
+            print(f"Task failed with exception: {e}")
+
+    handle_paused_requests_task.add_done_callback(task_done_callback)
+
+    monitor_coro = monitor_aio(loop, 3.0, [asyncio.current_task(), handle_paused_requests_task])
+    monitor_task = asyncio.create_task(monitor_coro)
 
     # Add network listener
     await monitor.listen(tab)
     await tab.send(cdp.network.set_cache_disabled(True))
-    
-    input("press any key")
+
+    # input("press any key")
 
     # Change the URL based on use case
+    logging.debug("Ok")
     start_time = time.time()
-    tab = await browser.get('https://bing.com')
-    
-    print(await monitor.get_requests())
-    print(await monitor.get_missing_responses())
+    await tab.send(cdp.page.navigate("https://bing.com"))
+    logging.debug("Ok2")
 
-    retries = 0
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"Elapsed Time: {elapsed_time:.6f} seconds")
-    while retries < 28:
-        print(retries)
-        if len(await monitor.get_missing_responses()) > 0:
-            await tab.wait(t=0.5)
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print(f"Elapsed Time: {elapsed_time:.6f} seconds")
-            print(await monitor.get_requests())
-            retries = retries + 1
-        else:
-            break
-    
-    print("Awaiting Tab")
+    # print(await monitor.get_requests())
+    # print(await monitor.get_missing_responses())
+
+    print("Awaiting Tab1")
     await tab
-    
+    print("Awaited Tab1")
+
     end_time = time.time()
     elapsed_time = end_time - start_time
     print(f"Elapsed Time: {elapsed_time:.6f} seconds")
-    
-    print(len(await monitor.receive(tab)))
-    
-    #with open('debug.txt', 'w') as f_obj:
-    #    json.dump([RequestEncoder(request) for request in await monitor.get_missing_responses()], f_obj)
-        #f_obj.write([RequestEncoder(request) for request in await monitor.get_missing_responses()])
-    
-    #time.sleep(1000)
-    
-    # Get the responses and process them
-    #xhr_responses = await monitor.receive(tab)
 
-if __name__ == '__main__':
-    from encoders import RequestEncoder, ResponseEncoder
-    uc.loop().run_until_complete(crawl())
+    # await tab.send(cdp.page.navigate('https://google.com'))
+
+    # print("Awaiting Tab2")
+    # await tab
+
+    monitor.print_data()
+
+    time.sleep(1000)
+
+    # Get the responses and process them
+    # xhr_responses = await monitor.receive(tab)
+
+
+if __name__ == "__main__":
+    loop = uc.loop()
+
+    loop.set_debug(False)
+
+    # import nodriver
+    # logging.info(nodriver.__file__)
+
+    loop.run_until_complete(crawl(loop))
