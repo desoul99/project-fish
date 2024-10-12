@@ -30,11 +30,11 @@ exclude = [
 ]
 
 # Same as Black.
-line-length = 200
+line-length = 400
 indent-width = 4
 
 # Assume Python 3.8
-target-version = "py38"
+target-version = "py311"
 
 [tool.ruff.lint]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.

@@ -3,3 +3,4 @@ pymongo
 pyyaml
 pika
 requests
+aiofiles
