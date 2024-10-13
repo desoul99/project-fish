@@ -1,173 +1,189 @@
 import asyncio
+import base64
+import hashlib
+import logging
+import typing
+from concurrent.futures import ProcessPoolExecutor
+
 import nodriver as uc
 from nodriver import cdp
-import time
-import typing
-import logging
+from nodriver.cdp.fetch import RequestPattern
+from nodriver.cdp.network import ResourceType
 
-# from .encoders import RequestEncoder, ResponseEncoder
-
-
-logging.basicConfig(level=logging.INFO)
+ALLOWED_RESOURCETYPES: list[ResourceType] = [cdp.network.ResourceType.XHR, cdp.network.ResourceType.DOCUMENT, cdp.network.ResourceType.IMAGE, cdp.network.ResourceType.MEDIA, cdp.network.ResourceType.OTHER, cdp.network.ResourceType.STYLESHEET, cdp.network.ResourceType.FONT, cdp.network.ResourceType.SCRIPT, cdp.network.ResourceType.FETCH, cdp.network.ResourceType.PING]
+REQUEST_PAUSE_PATTERN: list[RequestPattern] = [cdp.fetch.RequestPattern(request_stage=cdp.fetch.RequestStage.RESPONSE)]
+REDIRECT_STATUS_CODES: set[int] = {300, 301, 302, 303, 304, 305, 306, 307, 308}
 
 
-allowed_resourceTypes = [
-    cdp.network.ResourceType.XHR,
-    cdp.network.ResourceType.DOCUMENT,
-    cdp.network.ResourceType.IMAGE,
-    cdp.network.ResourceType.MEDIA,
-    cdp.network.ResourceType.OTHER,
-    cdp.network.ResourceType.STYLESHEET,
-    cdp.network.ResourceType.FONT,
-    cdp.network.ResourceType.SCRIPT,
-    cdp.network.ResourceType.FETCH,
-    cdp.network.ResourceType.PING,
-]
+class PausedResponse(typing.TypedDict):
+    paused_response: cdp.fetch.RequestPaused
+    body: typing.Optional[bytes]
+    sha256_hash: typing.Optional[str]
 
 
-# Define a TypedDict for the response type
-class ResponseType(typing.TypedDict):
-    request_id: cdp.network.RequestId
-    body: str
-    is_base64: bool
+def sha256_hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 class RequestMonitor:
-    def __init__(self, loop):
-        self.responses: cdp.network.ResponseReceived = []
-        self.requests: cdp.network.RequestWillBeSent = []
-        self.paused_requests: cdp.fetch.RequestPaused = []
-        self.paused_responses: cdp.fetch.RequestPaused = []
+    def __init__(self, loop) -> None:
+        self.responses: list[cdp.network.ResponseReceived] = []
+        self.requests: list[cdp.network.RequestWillBeSent] = []
+        self.paused_requests: list[cdp.fetch.RequestPaused] = []
+        self.paused_responses: list[PausedResponse] = []
         self.paused_requests_queue = asyncio.Queue()
-        self.loop = loop
+        self.hashing_process_pool = ProcessPoolExecutor(max_workers=5)
+        self.request_handling_tasks: list[asyncio.Task] = []
+        self.loop: asyncio.AbstractEventLoop = loop
 
-    async def listen(self, page: uc.Tab):
-        async def response_handler(evt: cdp.network.ResponseReceived):
+    def __del__(self) -> None:
+        self.hashing_process_pool.shutdown()
+
+    async def listen(self, tab: uc.Tab) -> None:
+        """
+        Sets up event listeners for network activity on the given tab and enables request interception.
+
+        This function registers handlers for various network events such as request interception and
+        response reception, allowing the system to capture and handle HTTP requests and responses
+        made by the browser.
+        """
+
+        async def _response_handler(evt: cdp.network.ResponseReceived) -> None:
             self.responses.append(evt)
 
-        async def request_handler(evt: cdp.network.RequestWillBeSent):
-            initiator_url = getattr(evt.initiator, "url", "") or ""
-            request_url = getattr(evt.request, "url", "") or ""
+        async def _request_handler(evt: cdp.network.RequestWillBeSent) -> None:
+            self.requests.append(evt)
 
-            if not (request_url.startswith("chrome") or request_url.startswith("blob:") or initiator_url.startswith("chrome")):
-                self.requests.append(evt)
-
-        async def fetch_request_paused_handler(evt: cdp.fetch.RequestPaused):
-            # self.paused_requests.append(evt)
+        async def _fetch_request_paused_handler(evt: cdp.fetch.RequestPaused) -> None:
             await self.paused_requests_queue.put(evt)
-            logging.info(f"Element {evt.request_id} put in queue")
+            logging.debug(f"Element {evt.request_id} put in queue")
 
-        pause_pattern = [cdp.fetch.RequestPattern(request_stage=cdp.fetch.RequestStage.RESPONSE)]
+        tab.add_handler(cdp.fetch.RequestPaused, _fetch_request_paused_handler)
+        await tab.send(cdp.fetch.enable(REQUEST_PAUSE_PATTERN))
+        await tab.send(cdp.network.set_cache_disabled(True))
 
-        page.add_handler(cdp.fetch.RequestPaused, fetch_request_paused_handler)
-        await page.send(cdp.fetch.enable(pause_pattern))
+        tab.add_handler(cdp.network.ResponseReceived, _response_handler)
+        tab.add_handler(cdp.network.RequestWillBeSent, _request_handler)
 
-        # page.add_handler(cdp.network.ResponseReceived, response_handler)
-        page.add_handler(cdp.network.RequestWillBeSent, request_handler)
+        handle_paused_requests_task: asyncio.Task = self.loop.create_task(self._handle_paused_requests_loop(tab))
 
-    async def handle_paused_response(self, evt: cdp.fetch.RequestPaused, page: uc.Tab):
-        # Response stage
+        # Add a callback to be notified if the task fails
+        def _task_done_callback(fut) -> None:
+            try:
+                fut.result()  # This will raise any exceptions that occurred in the task
+            except Exception as e:
+                print(f"Task failed with exception: {e}")
 
-        self.paused_responses.append(evt)
+        handle_paused_requests_task.add_done_callback(_task_done_callback)
 
-        if not evt.response_headers:
-            await page.send(cdp.fetch.continue_response(evt.request_id))
-            return
+    async def _async_sha256_hash(self, data: bytes) -> str:
+        return await self.loop.run_in_executor(self.hashing_process_pool, sha256_hash, data)
 
-        content_length = next((int(header.value) for header in evt.response_headers if header.name.lower() == "content-length"), 0)
+    async def _handle_paused_response(self, evt: cdp.fetch.RequestPaused, tab: uc.Tab) -> None:
+        """
+        Handles a paused response and determines the appropriate action based on the response headers, trying to retrieve the response body if possible.
+        """
+        body = None
 
-        if content_length == 0:
-            await page.send(cdp.fetch.continue_response(evt.request_id))
-            return
-
-        if evt.response_status_code in [300, 301, 302, 303, 304, 305, 306, 307, 308] and any(h.name.lower() == "location" for h in evt.response_headers):
+        if evt.response_headers is None:
+            # No headers
+            pass
+        elif next((int(header.value) for header in (evt.response_headers or []) if header.name.lower() == "content-length"), 0) == 0:
+            # No content
+            pass
+        elif evt.response_status_code in REDIRECT_STATUS_CODES and any(h.name.lower() == "location" for h in evt.response_headers):
             # Redirect
             pass
         else:
-            c = await page.send(cdp.fetch.get_response_body(evt.request_id))
-            if c is not None:
-                pass
+            response_body = await tab.send(cdp.fetch.get_response_body(evt.request_id))
+            if response_body:
+                body, is_base64 = response_body
+                body = base64.b64decode(body) if is_base64 else body.encode("utf-8")
             else:
                 logging.info(f"Failed to get response body for {str(evt.request_id)}")
 
-        await page.send(cdp.fetch.continue_response(evt.request_id))
+        await tab.send(cdp.fetch.continue_response(evt.request_id))
 
-    async def handle_paused_request(self, evt: cdp.fetch.RequestPaused, page: uc.Tab):
-        # Request stage
-        await page.send(cdp.fetch.continue_request(evt.request_id))
+        if body:
+            hash = await self._async_sha256_hash(body)
+            self.paused_responses.append(PausedResponse(paused_response=evt, body=body, sha256_hash=hash))
+        else:
+            self.paused_responses.append(PausedResponse(paused_response=evt))
 
-    async def handle_paused_requests(self, page: uc.Tab):
+    async def _handle_paused_request(self, evt: cdp.fetch.RequestPaused, tab: uc.Tab):
+        """
+        Handles a paused request by continuing the request process
+        """
+        await tab.send(cdp.fetch.continue_request(evt.request_id))
+
+    async def _handle_paused_requests_loop(self, tab: uc.Tab) -> None:
+        """
+        Loop that awaits new cdp.fetch.RequestPaused added to a Queue, identifies their time and handles them accordingly through the use of:
+        - self.handle_paused_response()
+        - self.handle_paused_request()
+        """
+
+        def _remove_completed_task(task: asyncio.Task) -> None:
+            """Remove the task from the running_tasks list when it's done."""
+            try:
+                # Ensure any exception in the task is re-raised for logging/debugging
+                task.result()
+            except Exception as e:
+                logging.error(f"Task failed with exception: {e}")
+            finally:
+                # Remove the completed task from the running list
+                self.request_handling_tasks.remove(task)
+
         while True:
-            logging.info("Awaiting Items")
-            evt = await self.paused_requests_queue.get()
-            logging.info(f"Got item {evt.request_id} from queue")
+            logging.debug("Awaiting Items")
+            evt: cdp.fetch.RequestPaused = await self.paused_requests_queue.get()
+            logging.debug(f"Got item {evt.request_id} from queue")
 
             if any(value is not None for value in [evt.response_error_reason, evt.response_status_code]):
-                logging.info(f"Handling {evt.request_id} as response")
-                self.loop.create_task(self.handle_paused_response(evt, page))
+                logging.debug(f"Handling {evt.request_id} as response")
+                task: asyncio.Task = self.loop.create_task(self._handle_paused_response(evt, tab))
             else:
-                logging.info(f"Handling {evt.request_id} as request")
-                self.loop.create_task(self.handle_paused_request(evt, page))
+                logging.debug(f"Handling {evt.request_id} as request")
+                task: asyncio.Task = self.loop.create_task(self._handle_paused_request(evt, tab))
 
-    def print_data(self):
+            task.add_done_callback(_remove_completed_task)
+            self.request_handling_tasks.append(task)
+
+    def print_data(self) -> None:
         print("Requests: " + str(len(self.requests)))
         print("Responses: " + str(len(self.responses)))
         print("Paused Responses: " + str(len(self.paused_responses)))
-        # print(self.responses[10])
+        print("Paused Responses body: " + str(len([response for response in self.paused_responses if response.get("body")])))
 
+        missing_paused_responses: list = []
+        if len(self.responses) != len(self.paused_responses):
+            for response in self.responses:
+                missing = True
+                for paused_response in self.paused_responses:
+                    if response.response.url == paused_response.get("paused_response").request.url:
+                        missing = False
+                        break
+                if missing:
+                    missing_paused_responses.append(response.response.url)
 
-async def crawl(loop):
-    # Start the browser
+        missing_responses: list = []
+        if len(self.requests) != len(self.responses):
+            for request in self.requests:
+                missing = True
+                for response in self.responses:
+                    if response.request_id == request.request_id:
+                        missing = False
+                        break
+                if missing:
+                    missing_responses.append(request.request.url)
 
-    browser = await uc.start(headless=False, browser_executable_path="/usr/bin/google-chrome")
-    monitor = RequestMonitor(loop)
+        print("Missing responses: " + str(len(missing_responses)))
+        print("Missing responses: " + "\n".join(missing_responses))
 
-    tab = await browser.get("about:blank")
+        print("Missing paused responses: " + str(len(missing_paused_responses)))
+        print("Missing paused responses: " + "\n".join(missing_paused_responses))
 
-    # input("press any key")
+        print("Running handling tasks: " + str(len(self.request_handling_tasks)))
 
-    loop.slow_callback_duration = 1  # 10 ms
-    handle_paused_requests_task = loop.create_task(monitor.handle_paused_requests(tab))
-
-    # Add a callback to be notified if the task fails
-    def task_done_callback(fut):
-        try:
-            fut.result()  # This will raise any exceptions that occurred in the task
-        except Exception as e:
-            print(f"Task failed with exception: {e}")
-
-    handle_paused_requests_task.add_done_callback(task_done_callback)
-
-    # Add network listener
-    await monitor.listen(tab)
-    await tab.send(cdp.network.set_cache_disabled(True))
-
-    logging.debug("Ok")
-    start_time = time.time()
-    await tab.send(cdp.page.navigate("https://bing.com"))
-    logging.debug("Ok2")
-
-    print("Awaiting Tab1")
-    await tab
-    print("Awaited Tab1")
-
-    await asyncio.sleep(1)
-
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"Elapsed Time: {elapsed_time:.6f} seconds")
-
-    monitor.print_data()
-
-    time.sleep(1000)
-
-
-if __name__ == "__main__":
-    loop = uc.loop()
-
-    loop.set_debug(False)
-
-    # import nodriver
-    # logging.info(nodriver.__file__)
-
-    loop.run_until_complete(crawl(loop))
+    def print_running_tasks(self) -> None:
+        print("Running handling tasks: " + str(len(self.request_handling_tasks)))
