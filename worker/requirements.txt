@@ -4,4 +4,3 @@ pyyaml
 pika
 requests
 aiofiles
-aio_pika

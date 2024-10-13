@@ -30,8 +30,8 @@ class RabbitMQConfig:
 @dataclass
 class BrowserConfig:
     max_tabs: int
-    executable_path: Optional[str]
-    proxy: Optional[str]
+    executable_path: Optional[str] = None
+    proxy: Optional[str] = None
     execution_args: Optional[list[str]] = field(default_factory=list)
 
     # Define default flags as a class variable
@@ -53,3 +53,7 @@ class Config:
     mongodb: MongoDBConfig
     rabbitmq: RabbitMQConfig
     browser: BrowserConfig
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Config":
+        return cls(mongodb=MongoDBConfig(**data["mongodb"]), rabbitmq=RabbitMQConfig(**data["rabbitmq"]), browser=BrowserConfig(**data["browser"]))

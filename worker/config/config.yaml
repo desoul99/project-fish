@@ -14,5 +14,5 @@ rabbitmq:
   url_queue: pf_urlqueue
 
 browser:
-  max_tabs: 4
-  executable_path: /usr/bin/google-chrome
+  max_tabs: 2
+  executable_path: /usr/bin/google-chrome-stable

@@ -5,7 +5,7 @@ import logging
 import typing
 from concurrent.futures import ProcessPoolExecutor
 
-import nodriver as uc
+import nodriver
 from nodriver import cdp
 from nodriver.cdp.fetch import RequestPattern
 from nodriver.cdp.network import ResourceType
@@ -39,7 +39,7 @@ class RequestMonitor:
     def __del__(self) -> None:
         self.hashing_process_pool.shutdown()
 
-    async def listen(self, tab: uc.Tab) -> None:
+    async def listen(self, tab: nodriver.Tab) -> None:
         """
         Sets up event listeners for network activity on the given tab and enables request interception.
 
@@ -79,7 +79,7 @@ class RequestMonitor:
     async def _async_sha256_hash(self, data: bytes) -> str:
         return await self.loop.run_in_executor(self.hashing_process_pool, sha256_hash, data)
 
-    async def _handle_paused_response(self, evt: cdp.fetch.RequestPaused, tab: uc.Tab) -> None:
+    async def _handle_paused_response(self, evt: cdp.fetch.RequestPaused, tab: nodriver.Tab) -> None:
         """
         Handles a paused response and determines the appropriate action based on the response headers, trying to retrieve the response body if possible.
         """
@@ -110,13 +110,13 @@ class RequestMonitor:
         else:
             self.paused_responses.append(PausedResponse(paused_response=evt))
 
-    async def _handle_paused_request(self, evt: cdp.fetch.RequestPaused, tab: uc.Tab):
+    async def _handle_paused_request(self, evt: cdp.fetch.RequestPaused, tab: nodriver.Tab):
         """
         Handles a paused request by continuing the request process
         """
         await tab.send(cdp.fetch.continue_request(evt.request_id))
 
-    async def _handle_paused_requests_loop(self, tab: uc.Tab) -> None:
+    async def _handle_paused_requests_loop(self, tab: nodriver.Tab) -> None:
         """
         Loop that awaits new cdp.fetch.RequestPaused added to a Queue, identifies their time and handles them accordingly through the use of:
         - self.handle_paused_response()
@@ -148,6 +148,9 @@ class RequestMonitor:
 
             task.add_done_callback(_remove_completed_task)
             self.request_handling_tasks.append(task)
+
+    async def wait_for_completion(self, tab: nodriver.Tab) -> None:
+        return True
 
     def print_data(self) -> None:
         print("Requests: " + str(len(self.requests)))
