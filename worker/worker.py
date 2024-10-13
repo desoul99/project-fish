@@ -1,47 +1,37 @@
-import asyncio
-from aio_pika.abc import AbstractChannel, AbstractQueue, AbstractRobustConnection
-import concurrent
+import pika
+import yaml
 from model import model
 from modules.browser import WorkerBrowser
-import aio_pika
-import yaml
+from pika.adapters.blocking_connection import BlockingChannel
 
 
 class Consumer:
     def __init__(self, config: model.Config) -> None:
         self.config: model.Config = config
-        self.browser = WorkerBrowser(config)
 
-    async def start_browser(self) -> None:
-        await self.browser.start_browser()
+    def consume(self) -> None:
+        credentials = pika.PlainCredentials(username=self.config.rabbitmq.username, password=self.config.rabbitmq.password)
+        connection = pika.BlockingConnection(pika.ConnectionParameters(host=self.config.rabbitmq.host, credentials=credentials))
+        channel: BlockingChannel = connection.channel()
+        channel.queue_declare(queue=self.config.rabbitmq.url_queue)
 
-    async def _on_message(self, message: aio_pika.IncomingMessage) -> None:
-        url: str = message.body.decode()
-        if not url.startswith("http"):
-            url = "https://" + url
-        await self.browser.main(url)
-        await message.ack()
+        def _callback(ch: pika.channel.Channel, method: pika.spec.Basic.Deliver, properties: pika.spec.BasicProperties, body: bytes) -> None:
+            browser = WorkerBrowser(config)
+            url: str = body.decode(encoding="utf-8")
+            browser.load(url)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
 
-    async def main(self) -> None:
-        connection: AbstractRobustConnection = await aio_pika.connect_robust(url=self.config.rabbitmq.get_connection_url(), no_ack=True)
-        channel: AbstractChannel = await connection.channel()
-        await channel.set_qos(prefetch_count=self.config.browser.max_tabs)
-        queue: AbstractQueue = await channel.declare_queue(name=self.config.rabbitmq.url_queue, durable=False)
-        await queue.consume(self._on_message)
+        channel.basic_qos(prefetch_count=1)
+        channel.basic_consume(queue=self.config.rabbitmq.url_queue, on_message_callback=_callback)
+
+        print("Waiting for messages. To exit press CTRL+C")
+        channel.start_consuming()
 
 
 if __name__ == "__main__":
     # Load config
     with open("config/config.yaml", "r") as f_obj:
-        config: model.Config = yaml.load(f_obj, Loader=yaml.SafeLoader)
+        config: model.Config = model.Config.from_dict(yaml.load(f_obj, Loader=yaml.SafeLoader))
 
     consumer = Consumer(config)
-
-    loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
-
-    with concurrent.futures.ProcessPoolExecutor() as pool:
-        # Run in a different process using run_in_executor
-        loop.run_in_executor(pool, consumer.start_browser())
-
-    loop.create_task(consumer.main())
-    loop.run_forever()
+    consumer.consume()
