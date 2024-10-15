@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import signal
 import nodriver
 import pymongo
 import uuid
@@ -22,12 +21,6 @@ class WorkerBrowser:
         self.loop: asyncio.AbstractEventLoop = nodriver.loop()
         self.browser: nodriver.Browser
 
-        signal.signal(signal.SIGTERM, self.signal_handler)
-
-    def signal_handler(self, signum, frame) -> None:
-        self.close()
-        exit(0)
-
     def close(self) -> None:
         # If a browser instance exists, close it
         if self.browser:
@@ -44,10 +37,6 @@ class WorkerBrowser:
 
         try:
             await self.main(url)
-        except asyncio.CancelledError:
-            logging.info("Task cancellation detected! Exiting gracefully..")
-        except KeyboardInterrupt:
-            logging.info("CTRL+C detected! Exiting gracefully...")
         finally:
             self.close()
 

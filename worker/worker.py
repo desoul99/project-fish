@@ -98,7 +98,6 @@ class Consumer:
         await self.connection.close()
         logging.info("Shutting down process pool")
         self.executor.shutdown(wait=True)
-        exit(0)
 
 
 async def main() -> None:
