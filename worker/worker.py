@@ -9,6 +9,8 @@ import yaml
 from aio_pika.abc import AbstractChannel, AbstractQueue, AbstractRobustConnection
 from model import model
 from modules.browser import WorkerBrowser
+from modules.requestMonitor import RequestMonitor
+from modules.database import Database
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -35,8 +37,16 @@ def process_message(url: str, config: model.Config) -> None:
     print(f"Process {multiprocessing.current_process().pid} started.")
     start_time: float = time.time()
 
-    browser = WorkerBrowser(config)
+    browser = WorkerBrowser(config.browser)
+    request_monitor = RequestMonitor(browser.loop)
+    database = Database(config.mongodb)
+
+    browser.set_request_monitor(request_monitor)
     browser.loop.run_until_complete(browser.load(url))
+
+    # formatted_requests = DataProcessor.process_requests(self.request_monitor.requests)
+
+    database.insert(request_monitor.get_data())
 
     end_time: float = time.time()
     elapsed_time: float = end_time - start_time

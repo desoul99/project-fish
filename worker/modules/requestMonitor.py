@@ -150,7 +150,11 @@ class RequestMonitor:
             self.request_handling_tasks.append(task)
 
     async def wait_for_completion(self, tab: nodriver.Tab) -> None:
+        await asyncio.sleep(30)
         return True
+
+    def get_data(self) -> str:
+        return "Temp"
 
     def print_data(self) -> None:
         print("Requests: " + str(len(self.requests)))
