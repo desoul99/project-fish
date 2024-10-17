@@ -30,6 +30,7 @@ class RabbitMQConfig:
 @dataclass
 class BrowserConfig:
     max_tabs: int
+    pageload_timeout: int
     executable_path: Optional[str] = None
     proxy: Optional[str] = None
     execution_args: Optional[list[str]] = field(default_factory=list)

@@ -1,8 +1,10 @@
 import asyncio
+import functools
 import logging
 import multiprocessing
 import time
-from concurrent.futures import Executor, ProcessPoolExecutor
+from concurrent.futures import Executor, ProcessPoolExecutor, Future
+import uuid
 
 import aio_pika
 import yaml
@@ -11,8 +13,28 @@ from model import model
 from modules.browser import WorkerBrowser
 from modules.requestMonitor import RequestMonitor
 from modules.database import Database
+from modules.encoders import DataProcessor
 
 logging.basicConfig(level=logging.WARNING)
+
+
+def timeit(func):
+    """
+    Decorator to measure the execution time of a function using time.perf_counter.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.perf_counter()
+        pid = multiprocessing.current_process().pid
+        print(f"{func.__name__} in process {pid} started execution.")
+        result = func(*args, **kwargs)
+        end_time = time.perf_counter()
+        elapsed_time = end_time - start_time
+        print(f"{func.__name__} in process {pid} executed in {elapsed_time:.6f} seconds.")
+        return result
+
+    return wrapper
 
 
 # Debugging purposes
@@ -21,21 +43,28 @@ class MonitoringProcessPoolExecutor(ProcessPoolExecutor):
         super().__init__(*args, **kwargs)
 
     def _adjust_process_count(self):
-        super()._adjust_process_count()  # Call the base class method
+        super()._adjust_process_count()
         print(f"Current active processes: {len(self._processes)}")
 
     def submit(self, fn, *args, **kwargs):
         print(f"Submitting task {fn.__name__} with args: {args}")
-        return super().submit(fn, *args, **kwargs)
+        future = super().submit(fn, *args, **kwargs)
+        future.add_done_callback(self._on_task_complete)
+        return future
 
-    def _process_terminate(self, process):
-        print(f"Process {process.pid} terminated.")
-        super()._process_terminate(process)
+    def _on_task_complete(self, future: Future):
+        exception = future.exception()
+        if exception is None:
+            print(f"Task completed successfully. Result: {future.result()}")
+        else:
+            print(f"Task raised an exception: {exception}")
+        # Optional: Print current process count after task completion
+        print(f"Current active processes: {len(self._processes)}")
 
 
+@timeit
 def process_message(url: str, config: model.Config) -> None:
-    print(f"Process {multiprocessing.current_process().pid} started.")
-    start_time: float = time.time()
+    scan_id: uuid.UUID = uuid.uuid4()
 
     browser = WorkerBrowser(config.browser)
     request_monitor = RequestMonitor(browser.loop)
@@ -44,13 +73,9 @@ def process_message(url: str, config: model.Config) -> None:
     browser.set_request_monitor(request_monitor)
     browser.loop.run_until_complete(browser.load(url))
 
-    # formatted_requests = DataProcessor.process_requests(self.request_monitor.requests)
+    formatted_requests = DataProcessor.process_requests(scan_id, request_monitor.requests, request_monitor.responses, request_monitor.paused_responses)
 
-    database.insert(request_monitor.get_data())
-
-    end_time: float = time.time()
-    elapsed_time: float = end_time - start_time
-    print(f"Process {multiprocessing.current_process().pid} finished execution in {elapsed_time:.6f} seconds.")
+    database.insert(formatted_requests)
 
 
 class Consumer:

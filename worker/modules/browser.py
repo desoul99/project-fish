@@ -1,7 +1,7 @@
 import asyncio
 import logging
+import time
 import nodriver
-import uuid
 
 from model import model
 from modules.requestMonitor import RequestMonitor
@@ -12,7 +12,6 @@ class WorkerBrowser:
         self.config: model.BrowserConfig = config
 
         self.loop: asyncio.AbstractEventLoop = nodriver.loop()
-        self.scan_id: uuid.UUID = uuid.uuid4()
 
         self.request_monitor: RequestMonitor
         self.browser: nodriver.Browser
@@ -44,6 +43,12 @@ class WorkerBrowser:
 
         await tab.get(url)
 
-        await self.request_monitor.wait_for_completion(tab)
+        pageload_starting_time = time.monotonic()
+        try:
+            await asyncio.wait_for(tab, timeout=self.config.pageload_timeout)
+            remaining_pageload_timeout = self.config.pageload_timeout - (time.monotonic() - pageload_starting_time)
+            await self.request_monitor.wait_for_completion(tab, remaining_pageload_timeout)
+        except asyncio.TimeoutError:
+            pass
 
-        await tab
+        self.request_monitor.print_data()

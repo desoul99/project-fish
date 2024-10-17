@@ -15,4 +15,5 @@ rabbitmq:
 
 browser:
   max_tabs: 2
+  pageload_timeout: 30
   executable_path: /usr/bin/google-chrome-stable

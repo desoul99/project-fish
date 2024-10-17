@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import logging
+import time
 import typing
 from concurrent.futures import ProcessPoolExecutor
 
@@ -29,11 +30,18 @@ class RequestMonitor:
     def __init__(self, loop) -> None:
         self.responses: list[cdp.network.ResponseReceived] = []
         self.requests: list[cdp.network.RequestWillBeSent] = []
+
         self.paused_requests: list[cdp.fetch.RequestPaused] = []
         self.paused_responses: list[PausedResponse] = []
+
         self.paused_requests_queue = asyncio.Queue()
+
         self.hashing_process_pool = ProcessPoolExecutor(max_workers=5)
+
         self.request_handling_tasks: list[asyncio.Task] = []
+
+        self.last_request_time: float
+
         self.loop: asyncio.AbstractEventLoop = loop
 
     def __del__(self) -> None:
@@ -52,6 +60,7 @@ class RequestMonitor:
             self.responses.append(evt)
 
         async def _request_handler(evt: cdp.network.RequestWillBeSent) -> None:
+            self.last_request_time = time.monotonic()
             self.requests.append(evt)
 
         async def _fetch_request_paused_handler(evt: cdp.fetch.RequestPaused) -> None:
@@ -149,9 +158,18 @@ class RequestMonitor:
             task.add_done_callback(_remove_completed_task)
             self.request_handling_tasks.append(task)
 
-    async def wait_for_completion(self, tab: nodriver.Tab) -> None:
-        await asyncio.sleep(30)
-        return True
+    async def wait_for_completion(self, tab: nodriver.Tab, timeout: float) -> None:
+        starting_time = time.monotonic()
+        current_time = starting_time
+        sleep_time = timeout / 60
+
+        while (current_time - starting_time) < timeout:
+            if current_time - self.last_request_time > 1:
+                if len(self.request_handling_tasks) == 0:
+                    return
+
+            await asyncio.sleep(sleep_time)
+            current_time = time.monotonic()
 
     def get_data(self) -> str:
         return "Temp"
