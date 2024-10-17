@@ -73,7 +73,7 @@ def process_message(url: str, config: model.Config) -> None:
     browser.set_request_monitor(request_monitor)
     browser.loop.run_until_complete(browser.load(url))
 
-    formatted_requests = DataProcessor.process_requests(scan_id, request_monitor.requests, request_monitor.responses, request_monitor.paused_responses)
+    formatted_requests = DataProcessor.process_requests(scan_id, request_monitor)
 
     database.insert(formatted_requests)
 

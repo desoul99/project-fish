@@ -12,4 +12,4 @@ class Database:
         self.mongo_collection: pymongo.synchronous.collection.Collection = self.mongo_db[self.config.collection]
 
     def insert(self, data) -> None:
-        return True
+        self.mongo_collection.insert_one(data)

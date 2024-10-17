@@ -2,7 +2,7 @@ import uuid
 from nodriver import cdp
 from typing import Optional, Dict, Any
 
-from modules.requestMonitor import PausedResponse
+from modules.requestMonitor import RequestMonitor
 
 
 class DataProcessor:
@@ -11,36 +11,44 @@ class DataProcessor:
     """
 
     @staticmethod
-    def process_requests(scan_id: uuid.UUID, requests: list[cdp.network.RequestWillBeSent], responses: list[cdp.network.ResponseReceived], paused_responses: list[PausedResponse]):
+    def process_requests(scan_id: uuid.UUID, request_monitor: RequestMonitor):
         """
         Process the raw requests data and return the database-ready transformed data.
         """
+        requests = request_monitor.requests
+        responses = request_monitor.responses
+        paused_responses = request_monitor.paused_responses
+        request_interception_mapping = request_monitor.request_interception_mapping
+
         processed_data = {"scan_id": scan_id, "scan_url": "https://placeholder", "final_url": "https://placeholder", "requests": [], "urls": [], "ips": [], "domains": [], "hashes": []}
 
-        for req_evt in requests:
-            request = RequestEncoder(req_evt)
+        for _request in requests:
+            request = RequestEncoder(_request)
             initiator = request["initiator"].get("url", "") if request.get("initiator", False) else ""
             if not request["request"]["url"].startswith("chrome") and not initiator.startswith("chrome"):
                 processed_data["requests"].append({"request": request})
 
-        print(len(paused_responses))
         for paused_response in paused_responses:
-            for request in requests:
-                if paused_response["paused_response"].request == request.request:
-                    print(request.request_id)
+            for _req_id, _int_id in request_interception_mapping.items():
+                if _int_id == paused_response["paused_response"].request_id:
+                    request_id = _req_id
+                    break
 
-        # for request in raw_requests:
-        #     # Example transformation (cleaning, formatting, etc.)
-        #     processed_request = {
-        #         "url": request.get("url"),
-        #         "status_code": request.get("status"),
-        #         "headers": request.get("headers"),
-        #         "timestamp": DataProcessor._format_timestamp(request.get("timestamp")),
-        #         # Add other necessary transformations as needed.
-        #     }
-        #     processed_data.append(processed_request)
+            _response = next((response for response in responses if response.request_id == request_id), None)
+            if _response:
+                response = ResponseEncoder(_response)
 
-        return True
+                hash = paused_response.get("sha256_hash")
+                if hash:
+                    response["hash"] = hash
+                    processed_data["hashes"].append(hash)
+
+                _req = next((req for req in processed_data["requests"] if req["request"]["request_id"] == response["request_id"]), None)
+                index = processed_data["requests"].index(_req)
+                if index:
+                    processed_data["requests"][index]["response"] = response
+
+        return processed_data
 
     @staticmethod
     def _format_timestamp(timestamp: str) -> str:
