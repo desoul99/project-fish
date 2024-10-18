@@ -3,17 +3,17 @@ import functools
 import logging
 import multiprocessing
 import time
-from concurrent.futures import Executor, ProcessPoolExecutor, Future
 import uuid
+from concurrent.futures import Executor, Future, ProcessPoolExecutor
 
 import aio_pika
 import yaml
 from aio_pika.abc import AbstractChannel, AbstractQueue, AbstractRobustConnection
 from model import model
 from modules.browser import WorkerBrowser
-from modules.requestMonitor import RequestMonitor
 from modules.database import Database
 from modules.encoders import DataProcessor
+from modules.requestMonitor import RequestMonitor
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -27,11 +27,11 @@ def timeit(func):
     def wrapper(*args, **kwargs):
         start_time = time.perf_counter()
         pid = multiprocessing.current_process().pid
-        print(f"{func.__name__} in process {pid} started execution.")
+        logging.debug(f"{func.__name__} in process {pid} started execution.")
         result = func(*args, **kwargs)
         end_time = time.perf_counter()
         elapsed_time = end_time - start_time
-        print(f"{func.__name__} in process {pid} executed in {elapsed_time:.6f} seconds.")
+        logging.debug(f"{func.__name__} in process {pid} executed in {elapsed_time:.6f} seconds.")
         return result
 
     return wrapper
@@ -44,10 +44,10 @@ class MonitoringProcessPoolExecutor(ProcessPoolExecutor):
 
     def _adjust_process_count(self):
         super()._adjust_process_count()
-        print(f"Current active processes: {len(self._processes)}")
+        logging.debug(f"Current active processes: {len(self._processes)}")
 
     def submit(self, fn, *args, **kwargs):
-        print(f"Submitting task {fn.__name__} with args: {args}")
+        logging.debug(f"Submitting task {fn.__name__} with args: {args}")
         future = super().submit(fn, *args, **kwargs)
         future.add_done_callback(self._on_task_complete)
         return future
@@ -55,11 +55,11 @@ class MonitoringProcessPoolExecutor(ProcessPoolExecutor):
     def _on_task_complete(self, future: Future):
         exception = future.exception()
         if exception is None:
-            print(f"Task completed successfully. Result: {future.result()}")
+            logging.debug(f"Task completed successfully. Result: {future.result()}")
         else:
-            print(f"Task raised an exception: {exception}")
+            logging.debug(f"Task raised an exception: {exception}")
         # Optional: Print current process count after task completion
-        print(f"Current active processes: {len(self._processes)}")
+        logging.debug(f"Current active processes: {len(self._processes)}")
 
 
 @timeit
@@ -68,14 +68,15 @@ def process_message(url: str, config: model.Config) -> None:
 
     browser = WorkerBrowser(config.browser)
     request_monitor = RequestMonitor(browser.loop)
-    database = Database(config.mongodb)
+    database = Database(config.mongodb, config.redis)
 
     browser.set_request_monitor(request_monitor)
     browser.loop.run_until_complete(browser.load(url))
 
-    formatted_requests = DataProcessor.process_requests(scan_id, request_monitor)
+    formatted_requests, formatted_content = DataProcessor.process_requests(scan_id, url, request_monitor)
 
-    database.insert(formatted_requests)
+    database.insert_requests(formatted_requests)
+    database.insert_content(formatted_content)
 
 
 class Consumer:
@@ -99,12 +100,12 @@ class Consumer:
                 await self.channel.set_qos(prefetch_count=self.config.browser.max_tabs)
                 self.queue = await self.channel.declare_queue(name=self.config.rabbitmq.url_queue, durable=False)
                 await self.queue.consume(self._handle_message)
-                print("Connected to RabbitMQ.")
+                logging.debug("Connected to RabbitMQ.")
                 break  # Break out of the retry loop once connected
 
             except Exception as e:
                 retries += 1
-                print(f"Error connecting to RabbitMQ, retry {retries}/{max_retries}: {e}")
+                logging.warning(f"Error connecting to RabbitMQ, retry {retries}/{max_retries}: {e}")
                 if retries >= max_retries:
                     raise  # After max retries, give up and raise the exception
                 time.sleep(delay)  # Wait before retrying
@@ -119,7 +120,7 @@ class Consumer:
     async def consume(self) -> None:
         await self.connect()
 
-        print("Waiting for messages. To exit press CTRL+C")
+        logging.info("Waiting for messages. To exit press CTRL+C")
 
         async with self.queue.iterator() as queue_iter:
             async for message in queue_iter:
@@ -129,9 +130,9 @@ class Consumer:
                 asyncio.create_task(self._handle_message(message))
 
     async def close(self) -> None:
-        logging.info("Closing worker RabbitMQ Connection")
+        logging.debug("Closing worker RabbitMQ Connection")
         await self.connection.close()
-        logging.info("Shutting down process pool")
+        logging.debug("Shutting down process pool")
         self.executor.shutdown(wait=True)
 
 

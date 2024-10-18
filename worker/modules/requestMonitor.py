@@ -12,7 +12,7 @@ from nodriver.cdp.fetch import RequestPattern
 from nodriver.cdp.network import ResourceType
 
 ALLOWED_RESOURCETYPES: list[ResourceType] = [cdp.network.ResourceType.XHR, cdp.network.ResourceType.DOCUMENT, cdp.network.ResourceType.IMAGE, cdp.network.ResourceType.MEDIA, cdp.network.ResourceType.OTHER, cdp.network.ResourceType.STYLESHEET, cdp.network.ResourceType.FONT, cdp.network.ResourceType.SCRIPT, cdp.network.ResourceType.FETCH, cdp.network.ResourceType.PING]
-REQUEST_PAUSE_PATTERN: list[RequestPattern] = [cdp.fetch.RequestPattern(request_stage=cdp.fetch.RequestStage.REQUEST), cdp.fetch.RequestPattern(request_stage=cdp.fetch.RequestStage.RESPONSE)]
+REQUEST_PAUSE_PATTERN: list[RequestPattern] = [cdp.fetch.RequestPattern(request_stage=cdp.fetch.RequestStage.RESPONSE)]
 REDIRECT_STATUS_CODES: set[int] = {300, 301, 302, 303, 304, 305, 306, 307, 308}
 
 
@@ -30,9 +30,6 @@ class RequestMonitor:
     def __init__(self, loop) -> None:
         self.responses: list[cdp.network.ResponseReceived] = []
         self.requests: list[cdp.network.RequestWillBeSent] = []
-
-        self.request_interception_mapping: dict[cdp.network.RequestId : cdp.fetch.RequestId] = {}
-        self.request_interception_mapping_queue: list[cdp.network.RequestWillBeSent] = []
 
         self.paused_responses: list[PausedResponse] = []
 
@@ -64,7 +61,6 @@ class RequestMonitor:
         async def _request_handler(evt: cdp.network.RequestWillBeSent) -> None:
             self.last_request_time = time.monotonic()
             self.requests.append(evt)
-            self.request_interception_mapping_queue.append(evt)
 
         async def _fetch_request_paused_handler(evt: cdp.fetch.RequestPaused) -> None:
             await self.paused_requests_queue.put(evt)
@@ -84,7 +80,7 @@ class RequestMonitor:
             try:
                 fut.result()  # This will raise any exceptions that occurred in the task
             except Exception as e:
-                print(f"Task failed with exception: {e}")
+                logging.debug(f"Task failed with exception: {e}")
 
         handle_paused_requests_task.add_done_callback(_task_done_callback)
 
@@ -127,10 +123,6 @@ class RequestMonitor:
         Handles a paused request by continuing the request process
         """
         await tab.send(cdp.fetch.continue_request(evt.request_id))
-        req = next((request for request in self.request_interception_mapping_queue if request.request.url == evt.request.url), None)
-        if req:
-            self.request_interception_mapping_queue.remove(req)
-            self.request_interception_mapping.update({req.request_id: evt.request_id})
 
     async def _handle_paused_requests_loop(self, tab: nodriver.Tab) -> None:
         """
@@ -177,47 +169,3 @@ class RequestMonitor:
 
             await asyncio.sleep(sleep_time)
             current_time = time.monotonic()
-
-    def get_data(self) -> str:
-        return "Temp"
-
-    def print_data(self) -> None:
-        print("Requests: " + str(len(self.requests)))
-        print("Responses: " + str(len(self.responses)))
-        print("Paused Responses: " + str(len(self.paused_responses)))
-        print("Paused Responses body: " + str(len([response for response in self.paused_responses if response.get("body")])))
-        print("Req Mapping: " + str(self.request_interception_mapping))
-        print("Req Mapping Queue: " + str(self.request_interception_mapping_queue))
-
-        missing_paused_responses: list = []
-        if len(self.responses) != len(self.paused_responses):
-            for response in self.responses:
-                missing = True
-                for paused_response in self.paused_responses:
-                    if response.response.url == paused_response.get("paused_response").request.url:
-                        missing = False
-                        break
-                if missing:
-                    missing_paused_responses.append(response.response.url)
-
-        missing_responses: list = []
-        if len(self.requests) != len(self.responses):
-            for request in self.requests:
-                missing = True
-                for response in self.responses:
-                    if response.request_id == request.request_id:
-                        missing = False
-                        break
-                if missing:
-                    missing_responses.append(request.request.url)
-
-        print("Missing responses: " + str(len(missing_responses)))
-        print("Missing responses: " + "\n".join(missing_responses))
-
-        print("Missing paused responses: " + str(len(missing_paused_responses)))
-        print("Missing paused responses: " + "\n".join(missing_paused_responses))
-
-        print("Running handling tasks: " + str(len(self.request_handling_tasks)))
-
-    def print_running_tasks(self) -> None:
-        print("Running handling tasks: " + str(len(self.request_handling_tasks)))

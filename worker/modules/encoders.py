@@ -1,8 +1,9 @@
 import uuid
-from nodriver import cdp
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+from urllib.request import urlopen
 
-from modules.requestMonitor import RequestMonitor
+from modules.requestMonitor import RequestMonitor, sha256_hash
+from nodriver import cdp
 
 
 class DataProcessor:
@@ -11,53 +12,59 @@ class DataProcessor:
     """
 
     @staticmethod
-    def process_requests(scan_id: uuid.UUID, request_monitor: RequestMonitor):
+    def process_requests(scan_id: uuid.UUID, scan_url: str, request_monitor: RequestMonitor):
         """
-        Process the raw requests data and return the database-ready transformed data.
+        Process the raw requests data and return the database-ready requests transformed data.
         """
         requests = request_monitor.requests
         responses = request_monitor.responses
         paused_responses = request_monitor.paused_responses
-        request_interception_mapping = request_monitor.request_interception_mapping
 
-        processed_data = {"scan_id": scan_id, "scan_url": "https://placeholder", "final_url": "https://placeholder", "requests": [], "urls": [], "ips": [], "domains": [], "hashes": []}
+        processed_data = {"scan_id": scan_id, "scan_url": scan_url, "final_url": "https://placeholder", "requests": [], "urls": [], "ips": [], "domains": [], "hashes": []}
+        responses_content = []
 
         for _request in requests:
-            request = RequestEncoder(_request)
-            initiator = request["initiator"].get("url", "") if request.get("initiator", False) else ""
-            if not request["request"]["url"].startswith("chrome") and not initiator.startswith("chrome"):
-                processed_data["requests"].append({"request": request})
+            if (_request.initiator.url is None or not _request.initiator.url.startswith("chrome")) and not _request.request.url.startswith("chrome"):
+                request = request_encoder(_request)
 
-        for paused_response in paused_responses:
-            for _req_id, _int_id in request_interception_mapping.items():
-                if _int_id == paused_response["paused_response"].request_id:
-                    request_id = _req_id
-                    break
+                redirect = False
+                for index, request_item in enumerate(processed_data["requests"]):
+                    if request_item.get("request", {}).get("request_id") == _request.request_id:
+                        redirect = True
+                        if len(processed_data["requests"][index].get("requests", [])) == 0:
+                            processed_data["requests"][index].setdefault("requests", []).append(processed_data["requests"][index]["request"])
+                        processed_data["requests"][index]["requests"].append(request)
+                        processed_data["requests"][index]["request"] = request
+                        break
 
-            _response = next((response for response in responses if response.request_id == request_id), None)
-            if _response:
-                response = ResponseEncoder(_response)
+                if not redirect:
+                    processed_data["requests"].append({"request": request})
+                    index = processed_data["requests"].index({"request": request})
 
-                hash = paused_response.get("sha256_hash")
-                if hash:
-                    response["hash"] = hash
-                    processed_data["hashes"].append(hash)
+                    for _response in responses:
+                        if _response.request_id == _request.request_id:
+                            response = response_encoder(_response)
+                            body = hash = None
+                            if _response.response.url.startswith("data:"):
+                                with urlopen(_response.response.url) as _:
+                                    body = _.read()
+                                    hash = sha256_hash(body)
+                            else:
+                                for _paused_response in paused_responses:
+                                    if _paused_response["paused_response"].network_id == _request.request_id:
+                                        body = _paused_response.get("body", None)
+                                        hash = _paused_response.get("sha256_hash", None)
+                                        break
+                            if hash:
+                                response["sha256_hash"] = hash
+                                if hash not in processed_data["hashes"]:
+                                    processed_data["hashes"].append(hash)
+                                if body:
+                                    responses_content.append({"sha256_hash": hash, "body": body})
 
-                _req = next((req for req in processed_data["requests"] if req["request"]["request_id"] == response["request_id"]), None)
-                index = processed_data["requests"].index(_req)
-                if index:
-                    processed_data["requests"][index]["response"] = response
+                            processed_data["requests"][index]["response"] = response
 
-        return processed_data
-
-    @staticmethod
-    def _format_timestamp(timestamp: str) -> str:
-        """
-        Private helper method to format timestamps.
-        """
-        # Implement any specific formatting logic, such as converting to a different format.
-        # For simplicity, let's just return the original timestamp here.
-        return timestamp
+        return processed_data, responses_content
 
 
 def encode_event(evt, fields: Dict[str, str]) -> Dict[str, Optional[Any]]:
@@ -68,11 +75,11 @@ def encode_event(evt, fields: Dict[str, str]) -> Dict[str, Optional[Any]]:
     return encoded
 
 
-def RequestEncoder(evt: cdp.network.RequestWillBeSent) -> Dict[str, Optional[Any]]:
+def request_encoder(evt: cdp.network.RequestWillBeSent) -> Dict[str, Optional[Any]]:
     fields = {"request": "request", "request_id": "request_id", "loader_id": "loader_id", "document_url": "document_url", "timestamp": "timestamp", "wall_time": "wall_time", "initiator": "initiator", "redirect_has_extra_info": "redirect_has_extra_info", "redirect_response": "redirect_response", "type": "type_", "frame_id": "frame_id", "has_user_gesture": "has_user_gesture"}
     return encode_event(evt, fields)
 
 
-def ResponseEncoder(evt: cdp.network.ResponseReceived) -> Dict[str, Optional[Any]]:
+def response_encoder(evt: cdp.network.ResponseReceived) -> Dict[str, Optional[Any]]:
     fields = {"response": "response", "request_id": "request_id", "loader_id": "loader_id", "timestamp": "timestamp", "type": "type_", "has_extra_info": "has_extra_info", "frame_id": "frame_id"}
     return encode_event(evt, fields)

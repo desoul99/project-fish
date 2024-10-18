@@ -4,7 +4,8 @@ mongodb:
   host: 127.0.0.1
   port: 27017
   database: project-fish
-  collection: resources
+  request_collection: resources
+  content_collection: content
 
 rabbitmq:
   username: root
@@ -12,6 +13,11 @@ rabbitmq:
   host: 127.0.0.1
   port: 5672
   url_queue: pf_urlqueue
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  database: 0
 
 browser:
   max_tabs: 2

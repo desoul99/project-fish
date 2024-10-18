@@ -1,8 +1,8 @@
 import asyncio
 import logging
 import time
-import nodriver
 
+import nodriver
 from model import model
 from modules.requestMonitor import RequestMonitor
 
@@ -20,7 +20,6 @@ class WorkerBrowser:
         self.request_monitor = request_monitor
 
     def close(self) -> None:
-        # If a browser instance exists, close it
         if self.browser:
             self.browser.stop()
             logging.info("Browser closed.")
@@ -50,5 +49,3 @@ class WorkerBrowser:
             await self.request_monitor.wait_for_completion(tab, remaining_pageload_timeout)
         except asyncio.TimeoutError:
             pass
-
-        self.request_monitor.print_data()

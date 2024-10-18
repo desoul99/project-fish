@@ -9,7 +9,8 @@ class MongoDBConfig:
     host: str
     port: str
     database: str
-    collection: str
+    request_collection: str
+    content_collection: str
 
     def get_connection_url(self) -> str:
         return f"mongodb://{self.username}:{self.password}@{self.host}:{self.port}/"
@@ -25,6 +26,17 @@ class RabbitMQConfig:
 
     def get_connection_url(self) -> str:
         return f"amqp://{self.username}:{self.password}@{self.host}:{self.port}/"
+
+
+@dataclass
+class RedisConfig:
+    host: str
+    port: str
+    database: str
+
+    def __post_init__(self) -> None:
+        # Convert port to int after initialization
+        self.port = int(self.port)
 
 
 @dataclass
@@ -54,7 +66,8 @@ class Config:
     mongodb: MongoDBConfig
     rabbitmq: RabbitMQConfig
     browser: BrowserConfig
+    redis: RedisConfig
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
-        return cls(mongodb=MongoDBConfig(**data["mongodb"]), rabbitmq=RabbitMQConfig(**data["rabbitmq"]), browser=BrowserConfig(**data["browser"]))
+        return cls(mongodb=MongoDBConfig(**data["mongodb"]), rabbitmq=RabbitMQConfig(**data["rabbitmq"]), redis=RedisConfig(**data["redis"]), browser=BrowserConfig(**data["browser"]))
