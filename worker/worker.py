@@ -1,8 +1,11 @@
 import asyncio
+import configparser
 import functools
 import logging
+import logging.config
 import multiprocessing
 import time
+from typing import Optional
 import uuid
 from concurrent.futures import Executor, Future, ProcessPoolExecutor
 
@@ -11,11 +14,16 @@ import yaml
 from aio_pika.abc import AbstractChannel, AbstractQueue, AbstractRobustConnection
 from model import model
 from modules.browser import WorkerBrowser
-from modules.database import Database
+from modules.requestContentStorage import RequestContentStorage
 from modules.encoders import DataProcessor
 from modules.requestMonitor import RequestMonitor
 
-logging.basicConfig(level=logging.WARNING)
+# Load logging configuration from the INI file
+config = configparser.ConfigParser()
+config.read("config/logging_config.ini")
+
+# Configure logging
+logging.config.fileConfig(config)
 
 
 def timeit(func):
@@ -66,26 +74,63 @@ class MonitoringProcessPoolExecutor(ProcessPoolExecutor):
 def process_message(url: str, config: model.Config) -> None:
     scan_id: uuid.UUID = uuid.uuid4()
 
-    browser = WorkerBrowser(config.browser)
-    request_monitor = RequestMonitor(browser.loop)
-    database = Database(config.mongodb, config.redis)
+    loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    browser.set_request_monitor(request_monitor)
-    browser.loop.run_until_complete(browser.load(url))
+    with RequestMonitor(loop, config.browser.max_content_size) as request_monitor, WorkerBrowser(config.browser, request_monitor) as browser, RequestContentStorage(config.mongodb, config.redis) as request_content_storage:
+        try:
+            loop.run_until_complete(asyncio.wait_for(browser.load(url), timeout=config.browser.browser_timeout))
 
-    formatted_requests, formatted_content = DataProcessor.process_requests(scan_id, url, request_monitor)
+            formatted_requests: model.ProcessedDataDict = DataProcessor.format_requests(scan_id, url, request_monitor)
+            request_content_storage.insert_requests(formatted_requests)
 
-    database.insert_requests(formatted_requests)
-    database.insert_content(formatted_content)
+            formatted_content: list[model.ResponseContentDict] = DataProcessor.format_content(request_monitor)
+            request_content_storage.insert_content(formatted_content)
+
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout error while analyzing url: {url}")
+            raise
 
 
 class Consumer:
     def __init__(self, config: model.Config) -> None:
         self.config: model.Config = config
-        self.executor: Executor = MonitoringProcessPoolExecutor(max_workers=self.config.browser.max_tabs)
-        self.connection: AbstractRobustConnection
+        self.executor: Optional[Executor] = None
+        self.connection: Optional[AbstractRobustConnection] = None
         self.channel: AbstractChannel
         self.queue: AbstractQueue
+
+    async def __aenter__(self) -> "Consumer":
+        self.executor = MonitoringProcessPoolExecutor(max_workers=self.config.browser.max_tabs)
+        try:
+            await self.connect()
+        except Exception as e:
+            logging.error("Error occurred while connecting to RabbitMQ: %s", e)
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+        try:
+            await self.close()
+        except Exception as e:
+            logging.error("Error occurred while closing RabbitMQ Connection and proces pool: %s", e)
+            raise
+
+    async def close(self) -> None:
+        if self.connection:
+            try:
+                logging.debug("Closing worker RabbitMQ Connection")
+                await self.connection.close()
+            except Exception as e:
+                logging.error("Error closing RabbitMQ Connection: %s", e)
+                raise
+
+        if self.executor:
+            try:
+                logging.debug("Shutting down process pool")
+                self.executor.shutdown(wait=True)
+            except Exception as e:
+                logging.error("Error shutting down process pool: %s", e)
+                raise
 
     async def connect(self) -> None:
         retries = 0
@@ -114,26 +159,29 @@ class Consumer:
         url: str = message.body.decode()
 
         loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
-        await loop.run_in_executor(self.executor, process_message, url, self.config)
-        await message.ack()
+        try:
+            await loop.run_in_executor(self.executor, process_message, url, self.config)
+            await message.ack()
+        except Exception as e:
+            # Catch any other exceptions
+            await message.reject(requeue=True)
+            logging.error(f"Error occurred while processing message: {e}")
 
     async def consume(self) -> None:
-        await self.connect()
+        if not self.connection:
+            raise RuntimeError("Consumer is not connected to RabbitMQ.")
 
         logging.info("Waiting for messages. To exit press CTRL+C")
 
-        async with self.queue.iterator() as queue_iter:
-            async for message in queue_iter:
-                if message is None:
-                    break
-                # Create a task for each message to be handled concurrently
-                asyncio.create_task(self._handle_message(message))
-
-    async def close(self) -> None:
-        logging.debug("Closing worker RabbitMQ Connection")
-        await self.connection.close()
-        logging.debug("Shutting down process pool")
-        self.executor.shutdown(wait=True)
+        try:
+            async with self.queue.iterator() as queue_iter:
+                async for message in queue_iter:
+                    if message is None:
+                        break
+                    # Create a task for each message to be handled concurrently
+                    asyncio.create_task(self._handle_message(message))
+        except asyncio.CancelledError:
+            pass
 
 
 async def main() -> None:
@@ -141,12 +189,8 @@ async def main() -> None:
     with open("config/config.yaml", "r") as f_obj:
         config: model.Config = model.Config.from_dict(yaml.safe_load(f_obj))
 
-    consumer = Consumer(config)
-
-    try:
+    async with Consumer(config) as consumer:
         await consumer.consume()
-    finally:
-        await consumer.close()
 
 
 if __name__ == "__main__":

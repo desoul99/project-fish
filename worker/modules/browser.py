@@ -1,37 +1,39 @@
 import asyncio
 import logging
 import time
+from typing import Optional
 
 import nodriver
 from model import model
 from modules.requestMonitor import RequestMonitor
 
+from unittest.mock import patch
+
 
 class WorkerBrowser:
-    def __init__(self, config: model.BrowserConfig) -> None:
+    def __init__(self, config: model.BrowserConfig, request_monitor: RequestMonitor) -> None:
         self.config: model.BrowserConfig = config
+        self.request_monitor: RequestMonitor = request_monitor
+        self.browser: Optional[nodriver.Browser] = None
 
-        self.loop: asyncio.AbstractEventLoop = nodriver.loop()
+    def __enter__(self) -> "WorkerBrowser":
+        return self
 
-        self.request_monitor: RequestMonitor
-        self.browser: nodriver.Browser
-
-    def set_request_monitor(self, request_monitor: RequestMonitor):
-        self.request_monitor = request_monitor
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     def close(self) -> None:
         if self.browser:
             self.browser.stop()
-            logging.info("Browser closed.")
+            with patch("builtins.print"):
+                # Avoid littering the console with print statement inside deconstruct_browser()
+                nodriver.util.deconstruct_browser()
+            logging.debug("Browser closed.")
 
     async def load(self, url) -> None:
         if not url.startswith("http"):
             url: str = "https://" + url
-
-        try:
-            await self.main(url)
-        finally:
-            self.close()
+        await self.main(url)
 
     async def main(self, url: str) -> None:
         self.browser = await nodriver.start(browser_args=self.config.execution_args, browser_executable_path=self.config.executable_path, headless=False)

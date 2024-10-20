@@ -20,6 +20,8 @@ redis:
   database: 0
 
 browser:
-  max_tabs: 2
+  max_tabs: 5
   pageload_timeout: 30
+  browser_timeout: 45
+  max_content_size: 10MB
   executable_path: /usr/bin/google-chrome-stable
