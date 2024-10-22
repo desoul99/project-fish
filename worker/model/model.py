@@ -100,16 +100,6 @@ class Config:
         return cls(mongodb=MongoDBConfig(**data["mongodb"]), rabbitmq=RabbitMQConfig(**data["rabbitmq"]), redis=RedisConfig(**data["redis"]), browser=BrowserConfig(**data["browser"]))
 
 
-class ResponseCertificateDict(TypedDict):
-    sha256_fingerprint: str
-    request_id: cdp.network.RequestId
-
-
-class RedirectCertificateDict(TypedDict):
-    url: str
-    response_certificate: ResponseCertificateDict
-
-
 class ResponseContentDict(TypedDict):
     sha256_hash: str
     body: bytes
