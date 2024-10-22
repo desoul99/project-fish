@@ -6,6 +6,7 @@ mongodb:
   database: project-fish
   request_collection: resources
   content_collection: content
+  certificate_collection: certificates
 
 rabbitmq:
   username: root
@@ -17,7 +18,8 @@ rabbitmq:
 redis:
   host: 127.0.0.1
   port: 6379
-  database: 0
+  content_database: 0
+  certificate_database: 1
 
 browser:
   max_tabs: 5

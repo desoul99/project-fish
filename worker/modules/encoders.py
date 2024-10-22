@@ -1,3 +1,4 @@
+import json
 import uuid
 from typing import Any, Optional
 from urllib.request import urlopen
@@ -24,6 +25,13 @@ class DataProcessor:
             if (_request.initiator.url is None or not _request.initiator.url.startswith("chrome")) and not _request.request.url.startswith("chrome"):
                 request = request_encoder(_request)
 
+                if _request.redirect_response:
+                    if _request.redirect_response.security_details:
+                        request["redirect_response"]["securityDetails"] = DataProcessor._calculate_certificate_hash(request["redirect_response"]["securityDetails"])
+
+                    # Delete timing information to reduce the size of stored data
+                    request["redirect_response"].pop("timing", None)
+
                 redirect = False
                 for index, request_item in enumerate(processed_data["requests"]):
                     if request_item.get("request", {}).get("request_id") == _request.request_id:
@@ -47,9 +55,54 @@ class DataProcessor:
                                 if hash not in processed_data["hashes"]:
                                     processed_data["hashes"].append(hash)
 
+                            if _response.response.security_details:
+                                response["response"]["securityDetails"] = DataProcessor._calculate_certificate_hash(response["response"]["securityDetails"])
+
+                            # Delete timing information to reduce the size of stored data
+                            response["response"].pop("timing", None)
+
                             processed_data["requests"][index]["response"] = response
 
         return processed_data
+
+    @staticmethod
+    def format_certificates(request_monitor: RequestMonitor) -> list[dict[str, Any]]:
+        seen_hashes = set()
+        certificates = []
+        for request in request_monitor.requests:
+            if request.redirect_response and request.redirect_response.security_details:
+                encoded_request = request_encoder(request)
+                sha256_security_details_hash = DataProcessor._calculate_certificate_hash(encoded_request["redirect_response"]["securityDetails"])
+                if sha256_security_details_hash not in seen_hashes:
+                    certificates.append({"sha256_securityDetails": sha256_security_details_hash, "securityDetails": DataProcessor._cleanup_security_details(encoded_request["redirect_response"]["securityDetails"])})
+                    seen_hashes.add(sha256_security_details_hash)
+
+        for response in request_monitor.responses:
+            if response.response.security_details:
+                encoded_response = response_encoder(response)
+                sha256_security_details_hash = DataProcessor._calculate_certificate_hash(encoded_response["response"]["securityDetails"])
+                if sha256_security_details_hash not in seen_hashes:
+                    certificates.append({"sha256_securityDetails": sha256_security_details_hash, "securityDetails": DataProcessor._cleanup_security_details(encoded_response["response"]["securityDetails"])})
+                    seen_hashes.add(sha256_security_details_hash)
+
+        return certificates
+
+    @staticmethod
+    def _cleanup_security_details(security_details: dict) -> dict:
+        # Removing browser-dependent fields
+        security_details.pop("protocol", None)
+        security_details.pop("certificateId", None)
+        security_details.pop("keyExchange", None)
+        security_details.pop("cipher", None)
+        security_details.pop("keyExchangeGroup", None)
+        security_details.pop("mac", None)
+        security_details.pop("serverSignatureAlgorithm", None)
+        security_details.pop("encryptedClientHello", None)
+        return security_details
+
+    @staticmethod
+    def _calculate_certificate_hash(security_details: dict) -> str:
+        return sha256_hash(json.dumps(DataProcessor._cleanup_security_details(security_details), sort_keys=True).encode("utf-8"))
 
     @staticmethod
     def format_content(request_monitor: RequestMonitor) -> list[ResponseContentDict]:

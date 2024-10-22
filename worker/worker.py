@@ -87,6 +87,9 @@ def process_message(url: str, config: model.Config) -> None:
             formatted_content: list[model.ResponseContentDict] = DataProcessor.format_content(request_monitor)
             request_content_storage.insert_content(formatted_content)
 
+            formatted_certificates = DataProcessor.format_certificates(request_monitor)
+            request_content_storage.insert_certificates(formatted_certificates)
+
         except asyncio.TimeoutError:
             logging.error(f"Timeout error while analyzing url: {url}")
             raise

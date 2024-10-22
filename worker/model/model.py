@@ -15,6 +15,7 @@ class MongoDBConfig:
     database: str
     request_collection: str
     content_collection: str
+    certificate_collection: str
 
     def get_connection_url(self) -> str:
         return f"mongodb://{self.username}:{self.password}@{self.host}:{self.port}/"
@@ -36,11 +37,14 @@ class RabbitMQConfig:
 class RedisConfig:
     host: str
     port: str
-    database: str
+    content_database: str
+    certificate_database: str
 
     def __post_init__(self) -> None:
         # Convert port to int after initialization
         self.port = int(self.port)
+        self.content_database = int(self.content_database)
+        self.certificate_database = int(self.certificate_database)
 
 
 @dataclass
@@ -94,6 +98,16 @@ class Config:
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
         return cls(mongodb=MongoDBConfig(**data["mongodb"]), rabbitmq=RabbitMQConfig(**data["rabbitmq"]), redis=RedisConfig(**data["redis"]), browser=BrowserConfig(**data["browser"]))
+
+
+class ResponseCertificateDict(TypedDict):
+    sha256_fingerprint: str
+    request_id: cdp.network.RequestId
+
+
+class RedirectCertificateDict(TypedDict):
+    url: str
+    response_certificate: ResponseCertificateDict
 
 
 class ResponseContentDict(TypedDict):
