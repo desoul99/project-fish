@@ -22,8 +22,8 @@ redis:
   certificate_database: 1
 
 browser:
-  max_tabs: 5
+  max_tabs: 1
   pageload_timeout: 30
-  browser_timeout: 45
+  browser_timeout: 300
   max_content_size: 10MB
   executable_path: /usr/bin/google-chrome-stable
