@@ -71,6 +71,7 @@ class RequestMonitor:
         self.page_cookies: Optional[list[cdp.network.CookieParam]] = page_cookies
 
         self.cookies: list[cdp.network.Cookie] = []
+        self.console_logs: list[cdp.console.ConsoleMessage] = []
 
         self.max_content_size: int = max_content_size
         self.loop: asyncio.AbstractEventLoop = loop
@@ -106,12 +107,16 @@ class RequestMonitor:
             await self.paused_requests_queue.put(evt)
             logging.debug(f"Element {evt.request_id} put in queue")
 
+        async def _console_log_handler(evt: cdp.console.MessageAdded) -> None:
+            self.console_logs.append(evt.message)
+
         tab.add_handler(cdp.fetch.RequestPaused, _fetch_request_paused_handler)
         await tab.send(cdp.fetch.enable(RequestMonitor.REQUEST_PAUSE_PATTERN))
         await tab.send(cdp.network.set_cache_disabled(True))
 
         tab.add_handler(cdp.network.ResponseReceived, _response_handler)
         tab.add_handler(cdp.network.RequestWillBeSent, _request_handler)
+        tab.add_handler(cdp.console.MessageAdded, _console_log_handler)
 
         # Setup cookie settings
         if self.page_cookies:

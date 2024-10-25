@@ -24,7 +24,7 @@ class DataProcessor:
         Process the raw requests data and return the database-ready requests transformed data.
         """
         scan_info = ScanInfoDict(url=scan_url, final_url="", asn="", certificate="", domain="", ip="", initial_frame="")
-        extracted_data = ExtractedDataDict(asns=[], domains=[], hashes=[], ips=[], servers=[], urls=[], certificates=[], cookies=[])
+        extracted_data = ExtractedDataDict(asns=[], domains=[], hashes=[], ips=[], servers=[], urls=[], certificates=[], cookies=[], console_logs=[])
 
         for _request in request_monitor.requests:
             if _request.frame_id:
@@ -87,7 +87,7 @@ class DataProcessor:
 
                             processed_data["requests"][index]["response"] = response
 
-        extracted_data["ips"], extracted_data["urls"], extracted_data["servers"], extracted_data["asns"], extracted_data["domains"], extracted_data["cookies"] = DataProcessor._extract_data(request_monitor=request_monitor, config=config.maxminddb)
+        extracted_data["ips"], extracted_data["urls"], extracted_data["servers"], extracted_data["asns"], extracted_data["domains"], extracted_data["cookies"], extracted_data["console_logs"] = DataProcessor._extract_data(request_monitor=request_monitor, config=config.maxminddb)
         extracted_data["certificates"] = list(set(extracted_data["certificates"]))
 
         # Sort requests list by timestamp
@@ -102,7 +102,7 @@ class DataProcessor:
         redirects = []
         for r in processed_data["requests"]:
             if r["request"]["frame_id"] == scan_info["initial_frame"]:
-                if scan_info["final_url"] != r["request"]["document_url"]:
+                if (scan_info["final_url"] != r["request"]["document_url"]) or ((not scan_info["asn"] and not scan_info["certificate"] and not scan_info["ip"] and not scan_info["domain"]) and scan_info["final_url"] == r["request"]["document_url"]):
                     scan_info["final_url"] = r["request"]["document_url"]
                     if r["response"].get("asn", None):
                         scan_info["asn"] = r["response"]["asn"]
@@ -128,13 +128,14 @@ class DataProcessor:
         return processed_data
 
     @staticmethod
-    def _extract_data(request_monitor: RequestMonitor, config: MaxMindDBConfig) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+    def _extract_data(request_monitor: RequestMonitor, config: MaxMindDBConfig) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
         ips = set()
         urls = set()
         servers = set()
         asns = set()
         domains = set()
         cookies = []
+        console_logs = []
         for request in request_monitor.requests:
             if request.redirect_response:
                 if request.redirect_response.remote_ip_address:
@@ -184,7 +185,10 @@ class DataProcessor:
         for cookie in request_monitor.cookies:
             cookies.append(cookie.to_json())
 
-        return list(ips), list(urls), list(servers), list(asns), list(domains), cookies
+        for console_log in request_monitor.console_logs:
+            console_logs.append(console_log.to_json())
+
+        return list(ips), list(urls), list(servers), list(asns), list(domains), cookies, console_logs
 
     @staticmethod
     def _calculate_asn(ip: str, config: MaxMindDBConfig) -> Optional[str]:
