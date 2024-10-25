@@ -34,9 +34,14 @@ class RequestContentStorage:
             # Define index on mongo_content_collection for sha256 hash
             self.mongo_certificate_collection.create_index([("sha256_securityDetails", 1)], unique=True)
 
+            # Define index on mongo_request_collection for frequently accessed data
+            self.mongo_request_collection.create_index([("scan_info.url", pymongo.ASCENDING)])
+            self.mongo_request_collection.create_index([("scan_info.final_url", pymongo.ASCENDING)])
+            self.mongo_request_collection.create_index([("extracted_data.hashes", pymongo.ASCENDING)])
+
             self.redis_content_client = redis.StrictRedis(host=self.config_redis.host, port=self.config_redis.port, db=self.config_redis.content_database)
             self.redis_certificate_client = redis.StrictRedis(host=self.config_redis.host, port=self.config_redis.port, db=self.config_redis.certificate_database)
-        except (pymongo.errors.ConnectionError, redis.ConnectionError) as e:
+        except (pymongo.errors.ConnectionFailure, redis.ConnectionError) as e:
             logging.error("Failed to connect to the database: %s", e)
             raise  # Re-raise the exception to notify the caller.
         return self
