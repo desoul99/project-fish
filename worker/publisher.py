@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import json
 import pika
 import sys
 import yaml
@@ -13,9 +14,13 @@ channel = connection.channel()
 
 channel.queue_declare(queue="pf_urlqueue")
 
-message = " ".join(sys.argv[1:]) or "https://google.com"
+message = {}
 
-channel.basic_publish(exchange="", routing_key="pf_urlqueue", body=message)
+if len(sys.argv[1:]) == 1:
+    message = {"url": sys.argv[1], "emulation_device": "pixel7", "proxy": "https://test.com"}
+
+
+channel.basic_publish(exchange="", routing_key="pf_urlqueue", body=json.dumps(message))
 
 print(f" [x] Sent {message}")
 

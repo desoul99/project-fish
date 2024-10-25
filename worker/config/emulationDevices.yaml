@@ -1,0 +1,27 @@
+devices:
+  - name: "pixel7"
+    device_metrics:
+      width: 980
+      height: 2170
+      device_scale_factor: 2.6249998807907104
+      mobile: true
+      scale: null
+      screen_width: 412
+      screen_height: 915
+      position_x: null
+      position_y: null
+      dont_set_visible_size: false
+      screen_orientation:
+        type_: "landscapePrimary"
+        angle: 0
+      viewport: null
+      display_feature: null
+      device_posture: null
+    user_agent_override:
+      user_agent: "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
+      accept_language: "it-IT,it,en-US,en"
+      platform: "Linux armv81"
+    is_mobile: true
+    accepted_encodings:
+      - value: "gzip"
+      - value: "deflate"

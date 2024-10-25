@@ -1,6 +1,7 @@
 import asyncio
 import configparser
 import functools
+import json
 import logging
 import logging.config
 import multiprocessing
@@ -17,6 +18,7 @@ from modules.browser import WorkerBrowser
 from modules.requestContentStorage import RequestContentStorage
 from modules.encoders import DataProcessor
 from modules.requestMonitor import RequestMonitor
+from modules.emulation import Emulation
 
 # Load logging configuration from the INI file
 config = configparser.ConfigParser()
@@ -71,17 +73,17 @@ class MonitoringProcessPoolExecutor(ProcessPoolExecutor):
 
 
 @timeit
-def process_message(url: str, config: model.Config) -> None:
+def process_message(message: model.RabbitMQMessage, config: model.Config) -> None:
     scan_id: uuid.UUID = uuid.uuid4()
 
     loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    with RequestMonitor(loop, config.browser.max_content_size) as request_monitor, WorkerBrowser(config.browser, request_monitor) as browser, RequestContentStorage(config.mongodb, config.redis) as request_content_storage:
+    with RequestMonitor(loop=loop, max_content_size=config.browser.max_content_size, emulation_device=message.emulation_device, proxy=message.proxy, page_cookies=message.page_cookies) as request_monitor, WorkerBrowser(config.browser, request_monitor) as browser, RequestContentStorage(config.mongodb, config.redis) as request_content_storage:
         try:
-            loop.run_until_complete(asyncio.wait_for(browser.load(url), timeout=config.browser.browser_timeout))
+            loop.run_until_complete(asyncio.wait_for(browser.main(message.url), timeout=config.browser.browser_timeout))
 
-            formatted_requests: model.ProcessedDataDict = DataProcessor.format_requests(scan_id, url, request_monitor, config)
+            formatted_requests: model.ProcessedDataDict = DataProcessor.format_requests(scan_id, message.url, request_monitor, config)
             request_content_storage.insert_requests(formatted_requests)
 
             formatted_content: list[model.ResponseContentDict] = DataProcessor.format_content(request_monitor)
@@ -91,13 +93,14 @@ def process_message(url: str, config: model.Config) -> None:
             request_content_storage.insert_certificates(formatted_certificates)
 
         except asyncio.TimeoutError:
-            logging.error(f"Timeout error while analyzing url: {url}")
+            logging.error(f"Timeout error while analyzing url: {message.url}")
             raise
 
 
 class Consumer:
     def __init__(self, config: model.Config) -> None:
         self.config: model.Config = config
+        self.emulation_validator: Optional[Emulation] = None
         self.executor: Optional[Executor] = None
         self.connection: Optional[AbstractRobustConnection] = None
         self.channel: AbstractChannel
@@ -105,6 +108,7 @@ class Consumer:
 
     async def __aenter__(self) -> "Consumer":
         self.executor = MonitoringProcessPoolExecutor(max_workers=self.config.browser.max_tabs)
+        self.emulation_validator = Emulation(self.config.emulation)
         try:
             await self.connect()
         except Exception as e:
@@ -159,11 +163,16 @@ class Consumer:
                 time.sleep(delay)  # Wait before retrying
 
     async def _handle_message(self, message: aio_pika.IncomingMessage) -> None:
-        url: str = message.body.decode()
+        try:
+            converted_message = model.RabbitMQMessage.from_dict(json.loads(message.body), emulation=self.emulation_validator)
+        except (ValueError, KeyError) as e:
+            await message.reject(requeue=False)
+            logging.error(f"Message was not properly formatted: {e}")
+            return
 
         loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(self.executor, process_message, url, self.config)
+            await loop.run_in_executor(self.executor, process_message, converted_message, self.config)
             await message.ack()
         except Exception as e:
             # Catch any other exceptions

@@ -30,11 +30,6 @@ class WorkerBrowser:
                 nodriver.util.deconstruct_browser()
             logging.debug("Browser closed.")
 
-    async def load(self, url) -> None:
-        if not url.startswith("http"):
-            url: str = "https://" + url
-        await self.main(url)
-
     async def main(self, url: str) -> None:
         self.browser = await nodriver.start(browser_args=self.config.execution_args, browser_executable_path=self.config.executable_path, headless=False)
 

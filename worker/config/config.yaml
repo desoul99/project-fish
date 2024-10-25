@@ -32,3 +32,6 @@ browser:
 maxminddb:
   country_database_path: /home/kali/workspace/project-fish/worker/config/GeoLite2-Country.mmdb
   asn_database_path: /home/kali/workspace/project-fish/worker/config/GeoLite2-ASN.mmdb
+
+emulation:
+  emulation_config: /home/kali/workspace/project-fish/worker/config/emulationDevices.yaml

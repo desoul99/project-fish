@@ -7,10 +7,12 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
 
 import nodriver
-from model.model import PausedResponseDict
+from model.model import PausedResponseDict, EmulationDevice
 from nodriver import cdp
 from nodriver.cdp.fetch import RequestPattern
 from nodriver.cdp.network import ResourceType
+
+from modules.emulation import Emulation
 
 
 def sha256_hash(data: bytes) -> str:
@@ -29,31 +31,8 @@ class RequestMonitor:
     ALLOWED_RESOURCETYPES: list[ResourceType] = [cdp.network.ResourceType.XHR, cdp.network.ResourceType.DOCUMENT, cdp.network.ResourceType.IMAGE, cdp.network.ResourceType.MEDIA, cdp.network.ResourceType.OTHER, cdp.network.ResourceType.STYLESHEET, cdp.network.ResourceType.FONT, cdp.network.ResourceType.SCRIPT, cdp.network.ResourceType.FETCH, cdp.network.ResourceType.PING]
     REQUEST_PAUSE_PATTERN: list[RequestPattern] = [cdp.fetch.RequestPattern(request_stage=cdp.fetch.RequestStage.RESPONSE)]
     REDIRECT_STATUS_CODES: set[int] = {300, 301, 302, 303, 304, 305, 306, 307, 308}
-    EMULATION_DEVICES = {
-        "pixel7": {
-            "device_metrics": {
-                "width": 980,
-                "height": 2170,
-                "device_scale_factor": 2.6249998807907104,
-                "mobile": True,
-                "scale": None,  # optional
-                "screen_width": 412,  # optional
-                "screen_height": 915,  # optional
-                "position_x": None,  # optional
-                "position_y": None,  # optional
-                "dont_set_visible_size": False,  # optional
-                "screen_orientation": cdp.emulation.ScreenOrientation("landscapePrimary", 0),  # optional
-                "viewport": None,  # optional
-                "display_feature": None,  # optional
-                "device_posture": None,  # optional
-            },
-            "user_agent_override": {"user_agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36", "accept_language": "it-IT,it,en-US,en", "platform": "Linux armv81"},
-            "is_mobile": True,
-            "accepted_encodings": [cdp.network.ContentEncoding(value="gzip"), cdp.network.ContentEncoding(value="deflate")],
-        }
-    }
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, max_content_size: int, emulate_device: Optional[str] = None, page_cookies: Optional[list[cdp.network.CookieParam]] = None) -> None:
+    def __init__(self, loop: asyncio.AbstractEventLoop, max_content_size: int, emulation_device: Optional[EmulationDevice] = None, proxy: Optional[str] = None, page_cookies: Optional[list[cdp.network.CookieParam]] = None) -> None:
         self.responses: list[cdp.network.ResponseReceived] = []
         self.requests: list[cdp.network.RequestWillBeSent] = []
 
@@ -67,7 +46,7 @@ class RequestMonitor:
 
         self.last_request_time: float
 
-        self.emulate_device: Optional[str] = emulate_device
+        self.emulation_device: Optional[EmulationDevice] = emulation_device
         self.page_cookies: Optional[list[cdp.network.CookieParam]] = page_cookies
 
         self.cookies: list[cdp.network.Cookie] = []
@@ -123,14 +102,8 @@ class RequestMonitor:
             await tab.send(cdp.network.set_cookies(self.page_cookies))
 
         # Setup device emulation settings
-        if self.emulate_device and self.emulate_device in RequestMonitor.EMULATION_DEVICES.keys():
-            await tab.send(cdp.emulation.set_device_metrics_override(**RequestMonitor.EMULATION_DEVICES[self.emulate_device]["device_metrics"]))
-            await tab.send(cdp.network.set_user_agent_override(**RequestMonitor.EMULATION_DEVICES[self.emulate_device]["user_agent_override"]))
-            await tab.send(cdp.emulation.set_user_agent_override(**RequestMonitor.EMULATION_DEVICES[self.emulate_device]["user_agent_override"]))
-            if RequestMonitor.EMULATION_DEVICES[self.emulate_device]["is_mobile"]:
-                await tab.send(cdp.emulation.set_touch_emulation_enabled(enabled=True))
-            if RequestMonitor.EMULATION_DEVICES[self.emulate_device]["accepted_encodings"]:
-                await tab.send(cdp.network.set_accepted_encodings())
+        if self.emulation_device:
+            await Emulation.setup_emulation_monitoring(tab, self.emulation_device)
 
         handle_paused_requests_task: asyncio.Task = self.loop.create_task(self._handle_paused_requests_loop(tab))
 

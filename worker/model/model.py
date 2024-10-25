@@ -1,7 +1,7 @@
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional, TypedDict
+from typing import Optional, TypedDict, Any
 
 from nodriver import cdp
 
@@ -37,6 +37,11 @@ class RabbitMQConfig:
 class MaxMindDBConfig:
     asn_database_path: str
     country_database_path: str
+
+
+@dataclass
+class EmulationConfig:
+    emulation_config: str
 
 
 @dataclass
@@ -102,10 +107,131 @@ class Config:
     browser: BrowserConfig
     redis: RedisConfig
     maxminddb: MaxMindDBConfig
+    emulation: EmulationConfig
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
-        return cls(mongodb=MongoDBConfig(**data["mongodb"]), rabbitmq=RabbitMQConfig(**data["rabbitmq"]), redis=RedisConfig(**data["redis"]), browser=BrowserConfig(**data["browser"]), maxminddb=MaxMindDBConfig(**data["maxminddb"]))
+        return cls(mongodb=MongoDBConfig(**data["mongodb"]), rabbitmq=RabbitMQConfig(**data["rabbitmq"]), redis=RedisConfig(**data["redis"]), browser=BrowserConfig(**data["browser"]), maxminddb=MaxMindDBConfig(**data["maxminddb"]), emulation=EmulationConfig(**data["emulation"]))
+
+
+@dataclass
+class DeviceMetrics:
+    width: int
+    height: int
+    device_scale_factor: float
+    mobile: bool
+    scale: Optional[float] = None
+    screen_width: Optional[int] = None
+    screen_height: Optional[int] = None
+    position_x: Optional[int] = None
+    position_y: Optional[int] = None
+    dont_set_visible_size: bool = False
+    screen_orientation: Optional[cdp.emulation.ScreenOrientation] = None
+    viewport: Optional[cdp.page.Viewport] = None
+    display_feature: Optional[cdp.emulation.DisplayFeature] = None
+    device_posture: Optional[cdp.emulation.DevicePosture] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DeviceMetrics":
+        # Convert screen_orientation if provided in dict form
+        if "screen_orientation" in data and isinstance(data["screen_orientation"], dict):
+            data["screen_orientation"] = cdp.emulation.ScreenOrientation(**data["screen_orientation"])
+        if "viewport" in data and isinstance(data["viewport"], dict):
+            data["viewport"] = cdp.page.Viewport(**data["viewport"])
+        if "display_feature" in data and isinstance(data["display_feature"], dict):
+            data["viewport"] = cdp.emulation.DisplayFeature(**data["display_feature"])
+        if "device_posture" in data and isinstance(data["device_posture"], dict):
+            data["device_posture"] = cdp.emulation.DevicePosture(**data["device_posture"])
+        return cls(**data)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = {
+            "width": self.width,
+            "height": self.height,
+            "device_scale_factor": self.device_scale_factor,
+            "mobile": self.mobile,
+            "scale": self.scale,
+            "screen_width": self.screen_width,
+            "screen_height": self.screen_height,
+            "position_x": self.position_x,
+            "position_y": self.position_y,
+            "dont_set_visible_size": self.dont_set_visible_size,
+            "screen_orientation": self.screen_orientation,
+            "viewport": self.viewport,
+            "display_feature": self.display_feature,
+            "device_posture": self.device_posture,
+        }
+        return data
+
+
+@dataclass
+class UserAgentOverride:
+    user_agent: str
+    accept_language: str
+    platform: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "UserAgentOverride":
+        return cls(**data)
+
+    def to_dict(self) -> dict[str, str]:
+        return {"user_agent": self.user_agent, "accept_language": self.accept_language, "platform": self.platform}
+
+
+@dataclass
+class EmulationDevice:
+    name: str
+    device_metrics: DeviceMetrics
+    user_agent_override: UserAgentOverride
+    is_mobile: bool
+    accepted_encodings: Optional[list[cdp.network.ContentEncoding]]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EmulationDevice":
+        # Process accepted_encodings list of dictionaries to cdp ContentEncoding objects
+        if data.get("accepted_encodings", []):
+            encodings = [cdp.network.ContentEncoding(value=enc["value"]) for enc in data.get("accepted_encodings", [])]
+        else:
+            encodings = None
+
+        # Instantiate the main class using sub-dictionaries converted to their respective classes
+        return cls(name=data["name"], device_metrics=DeviceMetrics.from_dict(data["device_metrics"]), user_agent_override=UserAgentOverride.from_dict(data["user_agent_override"]), is_mobile=data["is_mobile"], accepted_encodings=encodings)
+
+
+@dataclass
+class RabbitMQMessage:
+    url: str
+    emulation_device: Optional[EmulationDevice]
+    proxy: Optional[str]
+    page_cookies: Optional[list[cdp.network.CookieParam]]
+
+    from modules.emulation import Emulation
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], emulation: "Emulation") -> "RabbitMQMessage":
+        url = data.get("url")
+        emulation_device = data.get("emulation_device", None)
+        proxy = data.get("proxy", None)
+        page_cookies = data.get("page_cookies", None)
+
+        if url is None:
+            raise ValueError("The 'url' field is required and cannot be None.")
+
+        if not url.startswith("http"):
+            url = "https://" + url
+
+        if emulation_device is not None:
+            emulation_device = emulation.get_device_by_name(emulation_device)
+            if emulation_device is None:
+                raise ValueError("The specified emulation device is not configured")
+
+        if page_cookies is not None:
+            _page_cookies = []
+            for cookie in page_cookies:
+                _page_cookies.append(cdp.network.CookieParam.from_json(cookie))
+            page_cookies = _page_cookies
+
+        return cls(url=url, emulation_device=emulation_device, proxy=proxy, page_cookies=page_cookies)
 
 
 class ResponseContentDict(TypedDict):
