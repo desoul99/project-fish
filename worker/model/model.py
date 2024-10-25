@@ -34,6 +34,12 @@ class RabbitMQConfig:
 
 
 @dataclass
+class MaxMindDBConfig:
+    asn_database_path: str
+    country_database_path: str
+
+
+@dataclass
 class RedisConfig:
     host: str
     port: str
@@ -94,10 +100,11 @@ class Config:
     rabbitmq: RabbitMQConfig
     browser: BrowserConfig
     redis: RedisConfig
+    maxminddb: MaxMindDBConfig
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
-        return cls(mongodb=MongoDBConfig(**data["mongodb"]), rabbitmq=RabbitMQConfig(**data["rabbitmq"]), redis=RedisConfig(**data["redis"]), browser=BrowserConfig(**data["browser"]))
+        return cls(mongodb=MongoDBConfig(**data["mongodb"]), rabbitmq=RabbitMQConfig(**data["rabbitmq"]), redis=RedisConfig(**data["redis"]), browser=BrowserConfig(**data["browser"]), maxminddb=MaxMindDBConfig(**data["maxminddb"]))
 
 
 class ResponseContentDict(TypedDict):
@@ -111,12 +118,30 @@ class PausedResponseDict(TypedDict):
     sha256_hash: Optional[str]
 
 
-class ProcessedDataDict(TypedDict):
-    scan_id: uuid.UUID
-    scan_url: str
-    final_url: str
-    requests: list[dict]
+class ExtractedDataDict(TypedDict):
     urls: list[str]
     ips: list[str]
     domains: list[str]
     hashes: list[str]
+    asns: list[str]
+    servers: list[str]
+    certificates: list[str]
+    redirects: list[list[str]]
+
+
+class ScanInfoDict(TypedDict):
+    url: str
+    final_url: str
+    domain: str
+    asn: str
+    ip: str
+    certificate: str
+    initial_frame: str
+    # geo: TODO
+
+
+class ProcessedDataDict(TypedDict):
+    scan_id: uuid.UUID
+    scan_info: Optional[ScanInfoDict]
+    requests: list[dict]
+    extracted_data: Optional[ExtractedDataDict]

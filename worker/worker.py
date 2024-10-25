@@ -81,7 +81,7 @@ def process_message(url: str, config: model.Config) -> None:
         try:
             loop.run_until_complete(asyncio.wait_for(browser.load(url), timeout=config.browser.browser_timeout))
 
-            formatted_requests: model.ProcessedDataDict = DataProcessor.format_requests(scan_id, url, request_monitor)
+            formatted_requests: model.ProcessedDataDict = DataProcessor.format_requests(scan_id, url, request_monitor, config)
             request_content_storage.insert_requests(formatted_requests)
 
             formatted_content: list[model.ResponseContentDict] = DataProcessor.format_content(request_monitor)

@@ -3,10 +3,14 @@ import uuid
 from typing import Any, Optional
 from urllib.request import urlopen
 
-from model.model import PausedResponseDict, ProcessedDataDict, ResponseContentDict
+from model.model import PausedResponseDict, ProcessedDataDict, ResponseContentDict, ScanInfoDict, ExtractedDataDict, Config, MaxMindDBConfig
 from modules.requestMonitor import RequestMonitor, sha256_hash
 from nodriver import cdp
 from nodriver.cdp.network import ResponseReceived
+
+import maxminddb
+import ipaddress
+from urllib.parse import urlparse
 
 
 class DataProcessor:
@@ -15,11 +19,19 @@ class DataProcessor:
     """
 
     @staticmethod
-    def format_requests(scan_id: uuid.UUID, scan_url: str, request_monitor: RequestMonitor) -> ProcessedDataDict:
+    def format_requests(scan_id: uuid.UUID, scan_url: str, request_monitor: RequestMonitor, config: Config) -> ProcessedDataDict:
         """
         Process the raw requests data and return the database-ready requests transformed data.
         """
-        processed_data = ProcessedDataDict(scan_id=scan_id, scan_url=scan_url, final_url="", requests=[], urls=[], ips=[], domains=[], hashes=[])
+        scan_info = ScanInfoDict(url=scan_url, final_url="", asn="", certificate="", domain="", ip="", initial_frame="")
+        extracted_data = ExtractedDataDict(asns=[], domains=[], hashes=[], ips=[], servers=[], urls=[], certificates=[])
+
+        for _request in request_monitor.requests:
+            if _request.frame_id:
+                scan_info["initial_frame"] = _request.frame_id
+                break
+
+        processed_data = ProcessedDataDict(scan_id=scan_id, requests=[])
 
         for _request in request_monitor.requests:
             if (_request.initiator.url is None or not _request.initiator.url.startswith("chrome")) and not _request.request.url.startswith("chrome"):
@@ -28,6 +40,11 @@ class DataProcessor:
                 if _request.redirect_response:
                     if _request.redirect_response.security_details:
                         request["redirect_response"]["securityDetails"] = DataProcessor._calculate_certificate_hash(request["redirect_response"]["securityDetails"])
+                        extracted_data["certificates"].append(request["redirect_response"]["securityDetails"])
+
+                    if _request.redirect_response.remote_ip_address:
+                        _asn = DataProcessor._calculate_asn(_request.redirect_response.remote_ip_address, config.maxminddb)
+                        request["redirect_response"]["asn"] = _asn
 
                     # Delete timing information to reduce the size of stored data
                     request["redirect_response"].pop("timing", None)
@@ -47,23 +64,138 @@ class DataProcessor:
                     index = processed_data["requests"].index({"request": request})
 
                     for _response in request_monitor.responses:
-                        if _response.request_id == _request.request_id:
+                        if (_response.request_id == _request.request_id) and (_response.response.status not in RequestMonitor.REDIRECT_STATUS_CODES):
                             response = response_encoder(_response)
+
+                            if _response.response.remote_ip_address:
+                                _asn = DataProcessor._calculate_asn(_response.response.remote_ip_address, config.maxminddb)
+                                if _asn:
+                                    response["asn"] = _asn
+
                             body, hash = DataProcessor._get_response_body_and_hash(_response, request_monitor.paused_responses)
                             if hash:
                                 response["sha256_hash"] = hash
-                                if hash not in processed_data["hashes"]:
-                                    processed_data["hashes"].append(hash)
+                                if hash not in extracted_data["hashes"]:
+                                    extracted_data["hashes"].append(hash)
 
                             if _response.response.security_details:
                                 response["response"]["securityDetails"] = DataProcessor._calculate_certificate_hash(response["response"]["securityDetails"])
+                                extracted_data["certificates"].append(response["response"]["securityDetails"])
 
                             # Delete timing information to reduce the size of stored data
                             response["response"].pop("timing", None)
 
                             processed_data["requests"][index]["response"] = response
 
+        extracted_data["ips"], extracted_data["urls"], extracted_data["servers"], extracted_data["asns"], extracted_data["domains"] = DataProcessor._extract_data(request_monitor=request_monitor, config=config.maxminddb)
+        extracted_data["certificates"] = list(set(extracted_data["certificates"]))
+
+        # Sort requests list by timestamp
+        processed_data["requests"].sort(key=lambda x: x["request"]["timestamp"])
+
+        # Sort request redirect 'requests' list by timestamp
+        for request_dict in processed_data["requests"]:
+            if "requests" in request_dict.keys():
+                request_dict["requests"].sort(key=lambda x: x["timestamp"])
+
+        scan_info["final_url"] = scan_info["url"]
+        redirects = []
+        for r in processed_data["requests"]:
+            if r["request"]["frame_id"] == scan_info["initial_frame"]:
+                if scan_info["final_url"] != r["request"]["document_url"]:
+                    scan_info["final_url"] = r["request"]["document_url"]
+                    if r["response"].get("asn", None):
+                        scan_info["asn"] = r["response"]["asn"]
+                        scan_info["ip"] = r["response"]["response"]["remoteIPAddress"]
+                    if r["response"]["response"].get("securityDetails", None):
+                        scan_info["certificate"] = r["response"]["response"]["securityDetails"]
+                    try:
+                        o = urlparse(scan_info["final_url"])
+                        scan_info["domain"] = o.hostname
+                    except ValueError:
+                        continue
+
+                if "requests" in r.keys():
+                    _redirect_list = [redir["request"]["url"] for redir in r["requests"]]
+                    if scan_info["final_url"] == _redirect_list[-1]:
+                        redirects.append(_redirect_list)
+
+        extracted_data["redirects"] = redirects
+
+        processed_data["extracted_data"] = extracted_data
+        processed_data["scan_info"] = scan_info
+
         return processed_data
+
+    @staticmethod
+    def _extract_data(request_monitor: RequestMonitor, config: MaxMindDBConfig) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+        ips = set()
+        urls = set()
+        servers = set()
+        asns = set()
+        domains = set()
+        for request in request_monitor.requests:
+            if request.redirect_response:
+                if request.redirect_response.remote_ip_address:
+                    ips.add(request.redirect_response.remote_ip_address)
+
+                for key, value in request.redirect_response.headers.items():
+                    if key.lower() == "server":
+                        servers.add(value)
+
+                if not request.redirect_response.url.startswith("data:") and not request.redirect_response.url.startswith("blob:"):
+                    urls.add(request.redirect_response.url)
+            if not request.request.url.startswith("data:") and not request.request.url.startswith("blob:"):
+                urls.add(request.request.url)
+
+        for response in request_monitor.responses:
+            if response.response.remote_ip_address:
+                ips.add(response.response.remote_ip_address)
+
+            if not response.response.url.startswith("data:") and not response.response.url.startswith("blob:"):
+                urls.add(response.response.url)
+
+            for key, value in response.response.headers.items():
+                if key.lower() == "server":
+                    servers.add(value)
+
+        valid_ips = set()
+        for ip in ips:
+            try:
+                ipaddress.ip_address(ip)
+                valid_ips.add(ip)
+            except ValueError:
+                continue
+        ips = valid_ips
+
+        for ip in ips:
+            asn_number = DataProcessor._calculate_asn(ip, config)
+            if asn_number:
+                asns.add(asn_number)
+
+        for url in urls:
+            try:
+                o = urlparse(url)
+                domains.add(o.hostname)
+            except ValueError:
+                continue
+
+        return list(ips), list(urls), list(servers), list(asns), list(domains)
+
+    @staticmethod
+    def _calculate_asn(ip: str, config: MaxMindDBConfig) -> Optional[str]:
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            return None
+
+        with maxminddb.open_database(config.asn_database_path) as asn_db:
+            asn_info = asn_db.get(ip)
+            if asn_info:
+                asn_number = asn_info.get("autonomous_system_number", None)
+                if asn_number:
+                    return asn_number
+        return None
 
     @staticmethod
     def format_certificates(request_monitor: RequestMonitor) -> list[dict[str, Any]]:
@@ -126,7 +258,7 @@ class DataProcessor:
                 hash = sha256_hash(body)
         else:
             for _paused_response in paused_responses:
-                if _paused_response["paused_response"].network_id == response.request_id:
+                if (_paused_response["paused_response"].network_id == response.request_id) and (_paused_response["paused_response"].response_status_code == response.response.status):
                     body = _paused_response.get("body", None)
                     hash = _paused_response.get("sha256_hash", None)
                     break

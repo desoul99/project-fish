@@ -1,7 +1,7 @@
 nodriver
 pymongo
 pyyaml
-pika
 requests
-aiofiles
 redis
+aio_pika
+maxminddb
