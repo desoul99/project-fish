@@ -70,6 +70,8 @@ class RequestMonitor:
         self.emulate_device: Optional[str] = emulate_device
         self.page_cookies: Optional[list[cdp.network.CookieParam]] = page_cookies
 
+        self.cookies: list[cdp.network.Cookie] = []
+
         self.max_content_size: int = max_content_size
         self.loop: asyncio.AbstractEventLoop = loop
 
@@ -224,3 +226,9 @@ class RequestMonitor:
 
             await asyncio.sleep(sleep_time)
             current_time = time.monotonic()
+
+    async def finalize_monitoring(self, tab: nodriver.Tab) -> None:
+        """
+        Performs activities at the end of the page load, such as retrieving browser cookies
+        """
+        self.cookies = await tab.send(cdp.storage.get_cookies())

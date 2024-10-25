@@ -51,3 +51,5 @@ class WorkerBrowser:
             await self.request_monitor.wait_for_completion(tab, remaining_pageload_timeout, self.config.min_request_wait)
         except asyncio.TimeoutError:
             pass
+
+        await self.request_monitor.finalize_monitoring(tab)

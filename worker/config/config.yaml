@@ -25,6 +25,7 @@ browser:
   max_tabs: 1
   pageload_timeout: 30
   browser_timeout: 300
+  min_request_wait: 4
   max_content_size: 10MB
   executable_path: /usr/bin/google-chrome-stable
 

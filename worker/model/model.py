@@ -128,6 +128,7 @@ class ExtractedDataDict(TypedDict):
     servers: list[str]
     certificates: list[str]
     redirects: list[list[str]]
+    cookies: list[dict]
 
 
 class ScanInfoDict(TypedDict):

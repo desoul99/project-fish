@@ -24,7 +24,7 @@ class DataProcessor:
         Process the raw requests data and return the database-ready requests transformed data.
         """
         scan_info = ScanInfoDict(url=scan_url, final_url="", asn="", certificate="", domain="", ip="", initial_frame="")
-        extracted_data = ExtractedDataDict(asns=[], domains=[], hashes=[], ips=[], servers=[], urls=[], certificates=[])
+        extracted_data = ExtractedDataDict(asns=[], domains=[], hashes=[], ips=[], servers=[], urls=[], certificates=[], cookies=[])
 
         for _request in request_monitor.requests:
             if _request.frame_id:
@@ -87,7 +87,7 @@ class DataProcessor:
 
                             processed_data["requests"][index]["response"] = response
 
-        extracted_data["ips"], extracted_data["urls"], extracted_data["servers"], extracted_data["asns"], extracted_data["domains"] = DataProcessor._extract_data(request_monitor=request_monitor, config=config.maxminddb)
+        extracted_data["ips"], extracted_data["urls"], extracted_data["servers"], extracted_data["asns"], extracted_data["domains"], extracted_data["cookies"] = DataProcessor._extract_data(request_monitor=request_monitor, config=config.maxminddb)
         extracted_data["certificates"] = list(set(extracted_data["certificates"]))
 
         # Sort requests list by timestamp
@@ -134,6 +134,7 @@ class DataProcessor:
         servers = set()
         asns = set()
         domains = set()
+        cookies = []
         for request in request_monitor.requests:
             if request.redirect_response:
                 if request.redirect_response.remote_ip_address:
@@ -180,7 +181,10 @@ class DataProcessor:
             except ValueError:
                 continue
 
-        return list(ips), list(urls), list(servers), list(asns), list(domains)
+        for cookie in request_monitor.cookies:
+            cookies.append(cookie.to_json())
+
+        return list(ips), list(urls), list(servers), list(asns), list(domains), cookies
 
     @staticmethod
     def _calculate_asn(ip: str, config: MaxMindDBConfig) -> Optional[str]:
