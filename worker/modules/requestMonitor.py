@@ -212,13 +212,13 @@ class RequestMonitor:
             task.add_done_callback(_remove_completed_task)
             self.request_handling_tasks.append(task)
 
-    async def wait_for_completion(self, tab: nodriver.Tab, timeout: float) -> None:
+    async def wait_for_completion(self, tab: nodriver.Tab, timeout: float, min_request_wait: float) -> None:
         starting_time = time.monotonic()
         current_time = starting_time
         sleep_time = timeout / 60
 
         while (current_time - starting_time) < timeout:
-            if current_time - self.last_request_time > 2:
+            if current_time - self.last_request_time > min_request_wait:
                 if len(self.request_handling_tasks) == 0:
                     return
 

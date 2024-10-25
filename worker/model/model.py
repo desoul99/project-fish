@@ -58,6 +58,7 @@ class BrowserConfig:
     max_tabs: int
     pageload_timeout: int
     browser_timeout: int
+    min_request_wait: int
     max_content_size: str
     executable_path: Optional[str] = None
     proxy: Optional[str] = None

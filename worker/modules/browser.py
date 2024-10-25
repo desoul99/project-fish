@@ -48,6 +48,6 @@ class WorkerBrowser:
         try:
             await asyncio.wait_for(tab, timeout=self.config.pageload_timeout)
             remaining_pageload_timeout = self.config.pageload_timeout - (time.monotonic() - pageload_starting_time)
-            await self.request_monitor.wait_for_completion(tab, remaining_pageload_timeout)
+            await self.request_monitor.wait_for_completion(tab, remaining_pageload_timeout, self.config.min_request_wait)
         except asyncio.TimeoutError:
             pass
