@@ -23,7 +23,11 @@ class DataProcessor:
         """
         Process the raw requests data and return the database-ready requests transformed data.
         """
-        scan_info = ScanInfoDict(url=scan_url, final_url="", asn="", certificate="", domain="", ip="", initial_frame="")
+        screeshot_hash = None
+        if request_monitor.screenshot:
+            screeshot_hash = sha256_hash(request_monitor.screenshot)
+
+        scan_info = ScanInfoDict(url=scan_url, final_url="", asn="", certificate="", domain="", ip="", initial_frame="", screenshot_hash=screeshot_hash)
         extracted_data = ExtractedDataDict(asns=[], domains=[], hashes=[], ips=[], servers=[], urls=[], certificates=[], cookies=[], console_logs=[])
 
         for _request in request_monitor.requests:
@@ -104,11 +108,12 @@ class DataProcessor:
             if r["request"]["frame_id"] == scan_info["initial_frame"]:
                 if (scan_info["final_url"] != r["request"]["document_url"]) or ((not scan_info["asn"] and not scan_info["certificate"] and not scan_info["ip"] and not scan_info["domain"]) and scan_info["final_url"] == r["request"]["document_url"]):
                     scan_info["final_url"] = r["request"]["document_url"]
-                    if r["response"].get("asn", None):
-                        scan_info["asn"] = r["response"]["asn"]
-                        scan_info["ip"] = r["response"]["response"]["remoteIPAddress"]
-                    if r["response"]["response"].get("securityDetails", None):
-                        scan_info["certificate"] = r["response"]["response"]["securityDetails"]
+                    if r.get("response", None):
+                        if r["response"].get("asn", None):
+                            scan_info["asn"] = r["response"]["asn"]
+                            scan_info["ip"] = r["response"]["response"]["remoteIPAddress"]
+                        if r["response"]["response"].get("securityDetails", None):
+                            scan_info["certificate"] = r["response"]["response"]["securityDetails"]
                     try:
                         o = urlparse(scan_info["final_url"])
                         scan_info["domain"] = o.hostname
@@ -252,6 +257,9 @@ class DataProcessor:
             body, hash = DataProcessor._get_response_body_and_hash(response, request_monitor.paused_responses)
             if hash and body:
                 responses_content.append(ResponseContentDict(sha256_hash=hash, body=body))
+
+        if request_monitor.screenshot:
+            responses_content.append(ResponseContentDict(sha256_hash=sha256_hash(request_monitor.screenshot), body=request_monitor.screenshot))
 
         return responses_content
 

@@ -6,6 +6,7 @@ import logging
 import logging.config
 import multiprocessing
 import time
+import traceback
 from typing import Optional
 import uuid
 from concurrent.futures import Executor, Future, ProcessPoolExecutor
@@ -177,6 +178,7 @@ class Consumer:
         except Exception as e:
             # Catch any other exceptions
             await message.reject(requeue=True)
+            traceback.print_exc()
             logging.error(f"Error occurred while processing message: {e}")
 
     async def consume(self) -> None:

@@ -266,6 +266,7 @@ class ScanInfoDict(TypedDict):
     ip: str
     certificate: str
     initial_frame: str
+    screenshot_hash: Optional[str]
     # geo: TODO
 
 

@@ -210,3 +210,9 @@ class RequestMonitor:
         Performs activities at the end of the page load, such as retrieving browser cookies
         """
         self.cookies = await tab.send(cdp.storage.get_cookies())
+        b64_screenshot = await tab.send(cdp.page.capture_screenshot())
+        if b64_screenshot:
+            try:
+                self.screenshot = base64.b64decode(b64_screenshot)
+            except Exception:
+                self.screenshot = None
