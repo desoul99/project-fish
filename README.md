@@ -1,3 +1,6 @@
+**⚠️ Warning**  
+The refactored worker code is available in the `worker-refactor` branch.
+
 # Project Fish
 
 Project Fish is a web analysis tool designed to track and correlate resources accessed by malicious websites such as phishing or fake shops websites. Inspired by services like urlquery and urlscan, Project Fish aims to provide a simple solution for easily identifying clusters of websites.
